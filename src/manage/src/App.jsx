@@ -1,94 +1,14 @@
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useRef } from 'react'
+import { observer } from 'mobx-react-lite'
 import { Login, TabsOnTop, KeyValues, ConfigPanel } from '@wwf971/react-comp-misc'
 import ServerStatus from './ServerStatus'
-import DatabasePanel from './DatabasePanel'
+import DbPanel from './DbPanel'
+import { manageStore } from './store'
 import './App.css'
 
 function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
-  const [authToken, setAuthToken] = useState(null)
-  const [users, setUsers] = useState([])
-  const [config, setConfig] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [selectedToken, setSelectedToken] = useState(null)
-  const [activeTab, setActiveTab] = useState('users')
   const tabsOnTopRef = useRef(null)
 
-  const handleLoginSuccess = (data) => {
-    console.log('Login successful:', data)
-    setAuthToken(data.token)
-    setIsLoggedIn(true)
-  }
-
-  const fetchUsers = async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const response = await fetch('/manage/api/users', {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      })
-      const result = await response.json()
-      
-      if (result.code === 0) {
-        setUsers(result.data.users || [])
-      } else {
-        setError(result.message || 'Failed to fetch users')
-      }
-    } catch (err) {
-      setError('Error fetching users: ' + err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const fetchConfig = async () => {
-    try {
-      const response = await fetch('/manage/api/config', {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      })
-      const result = await response.json()
-      
-      if (result.code === 0) {
-        setConfig(result.data.config || {})
-      }
-    } catch (err) {
-      console.error('Error fetching config:', err)
-    }
-  }
-
-  const handleConfigUpdate = async (id, newValue) => {
-    try {
-      const response = await fetch('/manage/api/config', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ [id]: newValue })
-      })
-      const result = await response.json()
-      
-      if (result.code === 0) {
-        // Refresh config after update
-        await fetchConfig()
-        console.log(`Config updated: ${id} = ${newValue}`)
-      } else {
-        console.error('Failed to update config:', result.message)
-        alert(`Failed to update config: ${result.message}`)
-      }
-    } catch (err) {
-      console.error('Error updating config:', err)
-      alert(`Error updating config: ${err.message}`)
-    }
-  }
-
-  // Define config structure for ConfigPanel
   const configStruct = {
     items: [
       {
@@ -163,8 +83,8 @@ function App() {
         ]
       },
       {
-        id: 'database_pool',
-        label: 'Database Connection Pool',
+        id: 'db_pool',
+        label: 'Db Connection Pool',
         type: 'group',
         children: [
           {
@@ -200,141 +120,28 @@ function App() {
     ]
   }
 
-  const handleCreateUser = async () => {
-    const username = prompt('Enter username:')
-    if (!username) return
-    
-    const password = prompt('Enter password:')
-    if (!password) return
-    
-    setLoading(true)
-    setError(null)
-    try {
-      const response = await fetch('/manage/api/users', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ username, password }),
-      })
-      const result = await response.json()
-      
-      if (result.code === 0) {
-        fetchUsers()
-      } else {
-        setError(result.message || 'Failed to create user')
-      }
-    } catch (err) {
-      setError('Error creating user: ' + err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleDeleteUser = async (uid, username) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const response = await fetch(`/manage/api/users/${uid}`, {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      })
-      const result = await response.json()
-      
-      if (result.code === 0) {
-        fetchUsers()
-      } else {
-        setError(result.message || 'Failed to delete user')
-      }
-    } catch (err) {
-      setError('Error deleting user: ' + err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleIssueToken = async (uid, username) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const response = await fetch(`/manage/api/tokens/issue`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ uid })
-      })
-
-      const result = await response.json()
-
-      if (result.code === 0) {
-        fetchUsers()
-      } else {
-        setError(result.message || 'Failed to issue token')
-      }
-    } catch (err) {
-      setError('Error issuing token: ' + err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleViewToken = async (jti) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const response = await fetch(`/manage/api/tokens/${jti}`, {
-        headers: {
-          'Content-Type': 'application/json',
-        }
-      })
-
-      const result = await response.json()
-
-      if (result.code === 0) {
-        setSelectedToken(result.data)
-        // Switch to JWT Tokens tab
-        if (tabsOnTopRef.current) {
-          tabsOnTopRef.current.switchTab('jwt tokens')
-        }
-      } else {
-        setError(result.message || 'Failed to fetch token')
-      }
-    } catch (err) {
-      setError('Error fetching token: ' + err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
   useEffect(() => {
-    if (isLoggedIn) {
-      fetchUsers()
-      fetchConfig()
+    if (manageStore.isLoggedIn) {
+      manageStore.bootstrap()
     }
-  }, [isLoggedIn])
+  }, [manageStore.isLoggedIn])
 
-  const handleLogout = () => {
-    setIsLoggedIn(false)
-    setAuthToken(null)
-    setUsers([])
-    // Clear token from localStorage
-    localStorage.removeItem('authToken')
+  const handleTokenView = async (jti) => {
+    await manageStore.viewToken(jti)
+    if (tabsOnTopRef.current) {
+      tabsOnTopRef.current.switchTab('jwt tokens')
+    }
   }
 
-  if (!isLoggedIn) {
+  if (!manageStore.isLoggedIn) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', minHeight: '100vh', background: '#f5f5f5' }}>
-        <div style={{ minWidth: '10px', height: '200px' }}></div>
+      <div className="login-page">
+        <div className="login-spacer" />
         <Login 
+          data={manageStore}
           title="Management Login"
-          loginEndpoint="/manage/login"
-          timeout={5000}
-          onSuccess={handleLoginSuccess}
+          onDataChangeRequest={manageStore.onDataChangeRequest}
           useAuthToken={true}
-          authTokenKey="authToken"
           showTokenAtLogin={true}
         />
       </div>
@@ -344,21 +151,20 @@ function App() {
   return (
     <div className="dashboard">
       <header className="dashboard-header">
-        <div style={{ padding: '0px 16px'}}>
-          <h1>User Management Dashboard</h1>
-          <button onClick={handleLogout} className="logout-btn">Logout</button>
+        <div className="dashboard-header-inner">
+          <div className="page-title">User Management Dashboard</div>
+          <button onClick={manageStore.logout} className="logout-btn">Logout</button>
         </div>
       </header>
 
       <main className="dashboard-content">
         <ServerStatus />
+        <DbPanel />
         
         <div className="tabs-wrapper">
           <TabsOnTop ref={tabsOnTopRef} defaultTab="users">
             <TabsOnTop.Tab label="Users">
-
-
-              {error && <div className="error-message">{error}</div>}
+              {manageStore.error && <div className="error-message">{manageStore.error}</div>}
 
               <div className="table-container">
                 <table className="users-table">
@@ -372,12 +178,12 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {users.length === 0 ? (
+                    {manageStore.users.length === 0 ? (
                       <tr>
                         <td colSpan="5" className="no-data">No users found</td>
                       </tr>
                     ) : (
-                      users.map((user) => (
+                      manageStore.users.map((user) => (
                         <tr key={user.uid}>
                           <td>{user.uid}</td>
                           <td>{user.username}</td>
@@ -390,7 +196,7 @@ function App() {
                                     key={idx}
                                     className="token-info-btn"
                                     title={jti}
-                                    onClick={() => handleViewToken(jti)}
+                                    onClick={() => handleTokenView(jti)}
                                   >
                                     {jti.substring(0, 8)}...
                                   </button>
@@ -399,8 +205,8 @@ function App() {
                             ) : (
                               <button 
                                 className="action-btn issue-btn"
-                                onClick={() => handleIssueToken(user.uid, user.username)}
-                                disabled={loading}
+                                onClick={() => manageStore.issueToken(user.uid)}
+                                disabled={manageStore.isLoading}
                               >
                                 Issue
                               </button>
@@ -408,9 +214,9 @@ function App() {
                           </td>
                           <td>
                             <button 
-                              onClick={() => handleDeleteUser(user.uid, user.username)}
+                              onClick={() => manageStore.deleteUser(user.uid)}
                               className="action-btn delete-btn"
-                              disabled={loading}
+                              disabled={manageStore.isLoading}
                             >
                               Delete
                             </button>
@@ -421,26 +227,37 @@ function App() {
                   </tbody>
                 </table>
               </div>
-              <div className="section-header">
-                <div className="action-buttons">
-                  <button onClick={handleCreateUser} className="create-btn" disabled={loading}>
-                    Create User
-                  </button>
-                  <button onClick={fetchUsers} className="refresh-btn" disabled={loading}>
-                    {loading ? 'Loading...' : 'Refresh'}
-                  </button>
-                </div>
+              <div className="user-create-row">
+                <input
+                  className="text-input"
+                  value={manageStore.userDraft.username}
+                  onChange={(event) => manageStore.setUserDraftField('username', event.target.value)}
+                  placeholder="username"
+                />
+                <input
+                  className="text-input"
+                  value={manageStore.userDraft.password}
+                  onChange={(event) => manageStore.setUserDraftField('password', event.target.value)}
+                  placeholder="password"
+                  type="password"
+                />
+                <button onClick={manageStore.createUser} className="create-btn" disabled={manageStore.isLoading}>
+                  Create User
+                </button>
+                <button onClick={manageStore.fetchUsers} className="refresh-btn" disabled={manageStore.isLoading}>
+                  {manageStore.isLoading ? 'Loading...' : 'Refresh'}
+                </button>
               </div>
           </TabsOnTop.Tab>
 
           <TabsOnTop.Tab label="JWT Tokens">
             <div className="section-header">
-              <h2>JWT Token Details</h2>
+              <div className="section-title">JWT Token Details</div>
             </div>
-            {selectedToken ? (
+            {manageStore.selectedToken ? (
               <div className="token-details">
                 <KeyValues
-                  data={Object.entries(selectedToken).map(([key, value]) => ({
+                  data={Object.entries(manageStore.selectedToken).map(([key, value]) => ({
                     key,
                     value: typeof value === 'object' ? JSON.stringify(value) : String(value)
                   }))}
@@ -456,33 +273,30 @@ function App() {
             )}
           </TabsOnTop.Tab>
 
-          <TabsOnTop.Tab label="Databases">
-            <DatabasePanel />
-          </TabsOnTop.Tab>
         </TabsOnTop>
         </div>
 
         <div className="config-panel">
-          <h2>Configuration</h2>
+          <div className="config-section-title">Configuration</div>
           <TabsOnTop defaultTab="Edit Config">
             <TabsOnTop.Tab label="Edit Config">
-              {config ? (
+              {manageStore.config ? (
                 <ConfigPanel
                   configStruct={configStruct}
-                  configValue={config}
-                  onChangeAttempt={handleConfigUpdate}
+                  configValue={manageStore.config}
+                  onChangeAttempt={manageStore.updateConfig}
                   missingItemStrategy="setDefault"
                 />
               ) : (
-                <p>Loading configuration...</p>
+                <div className="loading-text">Loading configuration...</div>
               )}
             </TabsOnTop.Tab>
 
             <TabsOnTop.Tab label="Raw JSON">
-              {config ? (
-                <pre className="config-json">{JSON.stringify(config, null, 2)}</pre>
+              {manageStore.config ? (
+                <pre className="config-json">{JSON.stringify(manageStore.config, null, 2)}</pre>
               ) : (
-                <p>Loading configuration...</p>
+                <div className="loading-text">Loading configuration...</div>
               )}
             </TabsOnTop.Tab>
           </TabsOnTop>
@@ -492,4 +306,4 @@ function App() {
   )
 }
 
-export default App
+export default observer(App)

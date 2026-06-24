@@ -3,6 +3,8 @@ Authentication API - Business logic layer.
 Uses api_db for database operations.
 """
 
+from __future__ import annotations
+
 import bcrypt
 import time
 import uuid

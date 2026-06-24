@@ -12,6 +12,7 @@ sys.path += [
 ]
 from third_party.utils_python_global import _utils_file
 from sqlalchemy import Column, Integer, BigInteger, String, Boolean, ForeignKey, create_engine
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import bcrypt
 import random
@@ -60,7 +61,7 @@ class KeyPair(Base):
         return f"<KeyPair(id={self.id}, created_at={self.created_at}, is_active={self.is_active})>"
 
 
-def get_database_url(config, db_id=None):
+def get_db_config(config, db_id=None):
     """
     Build database URL based on database configuration.
     
@@ -74,8 +75,8 @@ def get_database_url(config, db_id=None):
     import logging
     logger = logging.getLogger(__name__)
     
-    database_list = config.get('DATABASE_LIST', [])
-    if not database_list:
+    db_list = config.get('DATABASE_LIST', [])
+    if not db_list:
         raise ValueError("DATABASE_LIST is empty in config")
     
     # Get database ID
@@ -83,11 +84,11 @@ def get_database_url(config, db_id=None):
         db_id = config.get('CURRENT_DATABASE_ID', 0)
     
     logger.info(f"Getting database URL for ID: {db_id}")
-    logger.info(f"Available databases: {[db.get('id') for db in database_list]}")
+    logger.info(f"Available databases: {[db.get('id') for db in db_list]}")
     
     # Find database config by ID
     db_config = None
-    for db in database_list:
+    for db in db_list:
         if db.get('id') == db_id:
             db_config = db
             break
@@ -95,8 +96,87 @@ def get_database_url(config, db_id=None):
     if not db_config:
         raise ValueError(f"Database with ID {db_id} not found in DATABASE_LIST")
     
+    return db_config
+
+
+def ensure_postgresql_db_exists(db_config):
+    import logging
+    import psycopg2
+    from psycopg2 import sql
+    from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+
+    logger = logging.getLogger(__name__)
+    db_name = db_config.get('database')
+    if not db_name:
+        raise ValueError("PostgreSQL database name is required")
+
+    connection = psycopg2.connect(
+        host=db_config.get('host') or '127.0.0.1',
+        port=int(db_config.get('port') or 5432),
+        dbname=os.environ.get('DB_BOOTSTRAP_NAME', 'postgres'),
+        user=db_config.get('username') or 'postgres',
+        password=db_config.get('password') or 'postgres',
+    )
+    connection.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("select 1 from pg_database where datname = %s", (db_name,))
+            if cursor.fetchone():
+                return
+            logger.info(f"Creating PostgreSQL database: {db_name}")
+            cursor.execute(sql.SQL("create database {}").format(sql.Identifier(db_name)))
+    finally:
+        connection.close()
+
+
+def test_db_connection(db_config):
+    db_type = str(db_config.get('type', 'sqlite')).lower()
+
+    if db_type == 'postgresql':
+        import psycopg2
+        connection = psycopg2.connect(
+            host=db_config.get('host') or '127.0.0.1',
+            port=int(db_config.get('port') or 5432),
+            dbname=db_config.get('database') or 'postgres',
+            user=db_config.get('username') or 'postgres',
+            password=db_config.get('password') or 'postgres',
+            connect_timeout=5,
+        )
+        connection.close()
+        return {"code": 0, "message": "connection ok"}
+
+    if db_type == 'sqlite':
+        import os
+        from sqlalchemy import create_engine, text
+        path = db_config.get('path', '/data/auth.db')
+        if not os.path.isabs(path):
+            path = os.path.abspath(path)
+        engine = create_engine(f"sqlite:///{path}", echo=False)
+        with engine.connect() as connection:
+            connection.execute(text("select 1"))
+        engine.dispose()
+        return {"code": 0, "message": "connection ok"}
+
+    if db_type == 'mysql':
+        import pymysql
+        connection = pymysql.connect(
+            host=db_config.get('host') or '127.0.0.1',
+            port=int(db_config.get('port') or 3306),
+            database=db_config.get('database') or '',
+            user=db_config.get('username') or '',
+            password=db_config.get('password') or '',
+            connect_timeout=5,
+        )
+        connection.close()
+        return {"code": 0, "message": "connection ok"}
+
+    raise ValueError(f"Unsupported db type: {db_type}")
+
+
+def get_db_url(config, db_id=None):
+    db_config = get_db_config(config, db_id)
     db_type = db_config.get('type', 'sqlite').lower()
-    
+
     if db_type == "sqlite":
         import os
         path = db_config.get('path', '/data/auth.db')
@@ -113,7 +193,14 @@ def get_database_url(config, db_id=None):
         
         return f"sqlite:///{path}"
     elif db_type == "postgresql":
-        return f"postgresql://{db_config['username']}:{db_config['password']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
+        return URL.create(
+            "postgresql+psycopg2",
+            username=db_config.get('username'),
+            password=db_config.get('password'),
+            host=db_config.get('host'),
+            port=int(db_config.get('port') or 5432),
+            database=db_config.get('database'),
+        )
     elif db_type == "mysql":
         return f"mysql+pymysql://{db_config['username']}:{db_config['password']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
     else:
@@ -134,17 +221,21 @@ def init_database(config, db_id=None):
     import logging
     logger = logging.getLogger(__name__)
     
-    DATABASE_URL = get_database_url(config, db_id)
-    logger.info(f"Initializing database with URL: {DATABASE_URL}")
+    db_config = get_db_config(config, db_id)
+    if str(db_config.get('type', 'sqlite')).lower() == 'postgresql':
+        ensure_postgresql_db_exists(db_config)
+
+    db_url = get_db_url(config, db_id)
+    logger.info(f"Initializing db with URL: {db_url}")
     
     # Ensure directory exists for SQLite
-    if config.get('DATABASE_TYPE', 'sqlite').lower() == 'sqlite':
-        db_file_path = config.get('DATABASE_SQLITE_PATH', '/data/auth.db')
+    if str(db_config.get('type', 'sqlite')).lower() == 'sqlite':
+        db_file_path = db_config.get('path', '/data/auth.db')
         _utils_file.create_dir_for_file_path(db_file_path)
         logger.info(f"SQLite database file path: {db_file_path}")
     
     engine = create_engine(
-        DATABASE_URL, 
+        db_url,
         echo=False,
         pool_size=config.get('DATABASE_POOL_SIZE', 5),
         max_overflow=config.get('DATABASE_MAX_OVERFLOW', 10),

@@ -1,6 +1,7 @@
 /src/third_party/
 /src/proto/
 config_dev.py
+config/config.0.yaml
 setup.sh
 id=*
 

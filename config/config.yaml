@@ -1,0 +1,40 @@
+service:
+  port_manage: 9530
+  port_service_http: 9531
+  port_service_grpc: 9532
+  port_aux: 9533
+
+auth:
+  users:
+    - username: "root"
+      password: "password"
+      roles:
+        - "manage"
+
+db:
+  current_db_id: 0
+  pool_size: 10
+  max_overflow: 20
+  pool_timeout: 30
+  pool_recycle: 3600
+
+config_dbs:
+  auth-postgres:
+    id: 0
+    host: "127.0.0.1"
+    port: 5432
+    db_name: "service_auth"
+    username: "postgres"
+    password: "postgres"
+    type: "postgresql"
+    is_default: true
+    is_removable: false
+
+jwt:
+  algorithm: "RS256"
+  expiration_hours: 24
+  private_key: null
+  public_key: null
+
+security:
+  bcrypt_rounds: 12

@@ -2,13 +2,6 @@
   margin-bottom: var(--spacing-lg);
 }
 
-.server-status-container h2 {
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--color-text);
-  margin-bottom: var(--spacing-md);
-}
-
 .server-panels {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -42,15 +35,27 @@
   font-size: 0.875rem;
 }
 
-.server-row .label {
+.server-row-label {
   color: var(--color-text-light);
   min-width: 60px;
 }
 
-.server-row .value {
+.server-row-value {
   color: var(--color-text);
   font-weight: 500;
   flex: 1;
+}
+
+.status-unknown {
+  color: #999999;
+}
+
+.status-alive {
+  color: #27ae60;
+}
+
+.status-down {
+  color: #e74c3c;
 }
 
 .renew-btn {

@@ -38,7 +38,7 @@ else:
 	import service_pb2_grpc
 
 from third_party.utils_python_global import _utils_file
-from config import compose_config, store_config_to_local_db
+from config import compose_config
 from utils import setup_logging
 
 # Setup logging
@@ -52,14 +52,11 @@ config_current = None
 app_manage = Flask(__name__)  # Management UI server
 app_aux = Flask(__name__)     # Auxiliary API server
 
-def get_db_file_path():
-	"""Determine database file path based on environment"""
-	is_docker = os.getenv('IS_DOCKER', 'true').lower() == 'true'
-	if is_docker:
-		return "/data/config.db"
-	else:
-		return dir_path_parent + "data/config.db"
 
+def format_grpc_error(error, grpc_port):
+	if isinstance(error, grpc_lib.RpcError) and error.code() == grpc_lib.StatusCode.UNAVAILABLE:
+		return f"gRPC service is not running on port {grpc_port}"
+	return str(error)
 
 def load_config():
 	"""Load and compose configuration from all sources"""
@@ -73,17 +70,9 @@ def load_config():
 		config_data = compose_config([])
 		config_current = config_data.get('config', {})
 		
-		# Log the actual DATABASE_SQLITE_PATH from config
-		logger.info(f"DATABASE_SQLITE_PATH from config: {config_current.get('DATABASE_SQLITE_PATH', 'not-set')}")
-		
 		# Add unix_stamp_ms - current time in milliseconds
 		config_current['unix_stamp_ms'] = int(time.time() * 1000)
-		
-		# Store config to database
-		db_file_path = get_db_file_path()
-		logger.info(f"Config database file path: {db_file_path}")
-		store_config_to_local_db(config_current, db_file_path)
-		
+
 		logger.info(f"Configuration loaded successfully: {len(config_current)} keys, unix_stamp_ms={config_current['unix_stamp_ms']}")
 		return config_current
 	except Exception as e:
@@ -230,57 +219,11 @@ def get_config_endpoint():
 @app_manage.route('/manage/api/config', methods=['POST'])
 def update_config_endpoint():
 	"""Update user configuration via management UI"""
-	global config_current
-	
-	try:
-		config_updates = request.json
-		if not config_updates:
-			return jsonify({
-				"code": -1,
-				"message": "No configuration updates provided",
-				"data": None
-			}), 400
-		
-		logger.info(f"Updating user config: {config_updates}")
-		
-		# Import set_config_user
-		from config import set_config_user, compose_config
-		
-		# Update config_user layer
-		set_config_user(config_updates)
-		
-		# Recompose config from all layers
-		config_data = compose_config([])
-		config_current = config_data.get('config', {})
-		config_current['unix_stamp_ms'] = int(time.time() * 1000)
-		
-		# Store updated config to database
-		db_file_path = get_db_file_path()
-		store_config_to_local_db(config_current, db_file_path)
-		
-		logger.info(f"Configuration updated successfully: {list(config_updates.keys())}")
-		
-		# Trigger restart of other servers if needed (so they pick up new config)
-		# This is async - servers will restart themselves
-		import threading
-		def restart_servers_delayed():
-			time.sleep(0.5)
-			check_and_restart_servers_if_needed()
-		threading.Thread(target=restart_servers_delayed, daemon=True).start()
-		
-		return jsonify({
-			"code": 0,
-			"message": "Configuration updated successfully",
-			"data": {"config": config_current}
-		}), 200
-		
-	except Exception as e:
-		logger.error(f"Error updating config: {e}")
-		return jsonify({
-			"code": -1,
-			"message": str(e),
-			"data": None
-		}), 500
+	return jsonify({
+		"code": -1,
+		"message": "Runtime config editing is disabled. Edit config/config.0.yaml and restart the service.",
+		"data": None
+	}), 400
 
 
 @app_manage.route('/manage/api/users', methods=['GET'])
@@ -559,7 +502,7 @@ def get_databases():
 		logger.error(f"Error getting databases: {e}")
 		return jsonify({
 			"code": -1,
-			"message": str(e),
+			"message": format_grpc_error(e, grpc_port),
 			"data": None
 		}), 500
 
@@ -694,6 +637,34 @@ def update_database_endpoint(db_id):
 		}), 500
 
 
+@app_manage.route('/manage/api/databases/<int:db_id>/test', methods=['POST'])
+def test_db_endpoint(db_id):
+	"""Test db connection for one endpoint"""
+	try:
+		from api.api_db import get_db_config, test_db_connection
+
+		db_config = get_db_config(config_current, db_id)
+		result = test_db_connection(db_config)
+		if result.get('code') == 0:
+			return jsonify({
+				"code": 0,
+				"message": result.get('message') or "connection ok",
+				"data": None
+			}), 200
+		return jsonify({
+			"code": -1,
+			"message": result.get('message') or "connection failed",
+			"data": None
+		}), 400
+	except Exception as e:
+		logger.error(f"Error testing db {db_id}: {e}")
+		return jsonify({
+			"code": -1,
+			"message": str(e),
+			"data": None
+		}), 500
+
+
 @app_manage.route('/manage/api/databases/switch/<int:db_id>', methods=['POST'])
 def switch_database_endpoint(db_id):
 	"""Switch to a different database"""
@@ -745,7 +716,7 @@ def manage_login():
 		if not manage_username or not manage_password:
 			return jsonify({
 				"code": -1,
-				"message": "Management account not found in config. Please set MANAGE_USERNAME and MANAGE_PASSWORD in config.",
+				"message": "Management account not found in config. Add an auth user with role manage.",
 				"data": None
 			}), 500
 		

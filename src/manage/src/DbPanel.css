@@ -1,0 +1,13 @@
+.db-panel {
+  margin-bottom: var(--spacing-lg);
+}
+
+.db-panel .section-header {
+  margin-bottom: var(--spacing-sm);
+}
+
+.db-card-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--spacing-md);
+}
