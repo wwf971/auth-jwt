@@ -11,6 +11,7 @@ This server:
 
 import logging
 import os
+import secrets
 import sys
 import time
 from datetime import datetime, timezone
@@ -55,6 +56,9 @@ app_aux = Flask(__name__)     # Auxiliary API server
 
 def format_grpc_error(error, grpc_port):
 	if isinstance(error, grpc_lib.RpcError) and error.code() == grpc_lib.StatusCode.UNAVAILABLE:
+		details = error.details() or ""
+		if "Auth db is not ready" in details:
+			return "Auth DB is not ready. Check the active DB endpoint in config/config.0.yaml, or switch to a reachable DB."
 		return f"gRPC service is not running on port {grpc_port}"
 	return str(error)
 
@@ -262,7 +266,7 @@ def get_users():
 		logger.error(f"Error getting users: {e}")
 		return jsonify({
 			"code": -1,
-			"message": str(e),
+			"message": format_grpc_error(e, grpc_port),
 			"data": None
 		}), 500
 
@@ -314,7 +318,7 @@ def add_user_endpoint():
 		logger.error(f"Error adding user: {e}")
 		return jsonify({
 			"code": -1,
-			"message": str(e),
+			"message": format_grpc_error(e, grpc_port),
 			"data": None
 		}), 500
 
@@ -355,7 +359,7 @@ def delete_user_endpoint(uid):
 		logger.error(f"Error deleting user: {e}")
 		return jsonify({
 			"code": -1,
-			"message": str(e),
+			"message": format_grpc_error(e, grpc_port),
 			"data": None
 		}), 500
 
@@ -409,7 +413,7 @@ def issue_jwt_token():
 		logger.error(f"Error issuing token: {e}")
 		return jsonify({
 			"code": -1,
-			"message": str(e),
+			"message": format_grpc_error(e, grpc_port),
 			"data": None
 		}), 500
 
@@ -456,7 +460,7 @@ def get_jwt_token(jti):
 		logger.error(f"Error getting token: {e}")
 		return jsonify({
 			"code": -1,
-			"message": str(e),
+			"message": format_grpc_error(e, grpc_port),
 			"data": None
 		}), 500
 
@@ -723,14 +727,14 @@ def manage_login():
 		# Validate credentials
 		if username == manage_username and password == manage_password:
 			logger.info(f"✓ Management login successful for user: {username}")
-			# TODO: Generate proper token instead of simple string
-			token = f"mgmt_{username}_{int(time.time())}"
+			token = secrets.token_urlsafe(32)
 			
 			return jsonify({
 				"code": 0,
 				"message": "Login successful",
 				"data": {
 					"token": token,
+					"token_name": f"mgmt:{username}",
 					"username": username
 				}
 			}), 200

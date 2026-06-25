@@ -174,6 +174,8 @@ def test_db_connection(db_config):
 
 
 def get_db_url(config, db_id=None):
+    import logging
+    logger = logging.getLogger(__name__)
     db_config = get_db_config(config, db_id)
     db_type = db_config.get('type', 'sqlite').lower()
 

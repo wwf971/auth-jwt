@@ -370,8 +370,8 @@ def issue_jwt_token(config, session, uid: int) -> tuple:
     created_at = int(time.time())
     expires_at = created_at + (expiration_hours * 3600)
     
-    # Create JWT payload
-    payload = {
+    # Create JWT claims
+    claims = {
         'uid': uid,
         'jti': jti,
         'iat': created_at,  # issued at
@@ -383,7 +383,7 @@ def issue_jwt_token(config, session, uid: int) -> tuple:
     algorithm = config.get('JWT_ALGORITHM', 'RS256')
     
     # Generate token
-    token = jwt.encode(payload, private_key, algorithm=algorithm)
+    token = jwt.encode(claims, private_key, algorithm=algorithm)
     
     # Get timezone offset
     from datetime import datetime
@@ -410,7 +410,7 @@ def verify_jwt_token_with_public_key(jwt_token: str, public_key: str, algorithm:
     Returns:
         dict: {
             "valid": bool,
-            "payload": dict or None,
+            "claims": dict or None,
             "error": str or None,
             "expired": bool
         }
@@ -427,27 +427,27 @@ def verify_jwt_token_with_public_key(jwt_token: str, public_key: str, algorithm:
                 pass  # Assume it's already a PEM string
         
         # Decode and verify token
-        payload = pyjwt.decode(
+        claims = pyjwt.decode(
             jwt_token,
             public_key,
             algorithms=[algorithm]
         )
         
         # Check expiration manually (jwt.decode already checks, but let's be explicit)
-        exp = payload.get('exp', 0)
+        exp = claims.get('exp', 0)
         current_time = int(time.time())
         
         if exp < current_time:
             return {
                 "valid": False,
-                "payload": None,
+                "claims": None,
                 "error": "Token expired",
                 "expired": True
             }
         
         return {
             "valid": True,
-            "payload": payload,
+            "claims": claims,
             "error": None,
             "expired": False
         }
@@ -455,21 +455,21 @@ def verify_jwt_token_with_public_key(jwt_token: str, public_key: str, algorithm:
     except pyjwt.ExpiredSignatureError:
         return {
             "valid": False,
-            "payload": None,
+            "claims": None,
             "error": "Token expired",
             "expired": True
         }
     except pyjwt.InvalidTokenError as e:
         return {
             "valid": False,
-            "payload": None,
+            "claims": None,
             "error": f"Invalid token: {str(e)}",
             "expired": False
         }
     except Exception as e:
         return {
             "valid": False,
-            "payload": None,
+            "claims": None,
             "error": f"Verification error: {str(e)}",
             "expired": False
         }
@@ -490,8 +490,8 @@ def get_uid_from_token(jwt_token: str, public_key: str, algorithm: str = "RS256"
     """
     result = verify_jwt_token_with_public_key(jwt_token, public_key, algorithm)
     
-    if result["valid"] and result["payload"]:
-        return result["payload"].get("uid")
+    if result["valid"] and result["claims"]:
+        return result["claims"].get("uid")
     
     return None
 
@@ -509,24 +509,17 @@ def verify_jwt_token(config, session, jwt_token: str) -> bool:
     Returns:
         bool: True if valid and not revoked, False otherwise
     """
-    # Get public key from config
-    public_key = config.get('JWT_PUBLIC_KEY')
+    public_key = get_public_key(config, session)
     algorithm = config.get('JWT_ALGORITHM', 'RS256')
-    
-    if not public_key:
-        import logging
-        logging.error("JWT_PUBLIC_KEY not configured")
-        return False
-    
-    # Verify token cryptographically
+
     result = verify_jwt_token_with_public_key(jwt_token, public_key, algorithm)
     
     if not result["valid"]:
         return False
     
     # Check if token is revoked in database
-    payload = result["payload"]
-    jti = payload.get("jti")
+    claims = result["claims"]
+    jti = claims.get("jti")
     
     if jti:
         token_record = db_get_jwt_token(session, jti)

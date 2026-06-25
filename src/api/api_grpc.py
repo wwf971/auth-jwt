@@ -25,11 +25,14 @@ from api.api import (
     init_database,
     login_user,
     verify_jwt_token,
+    get_username_of_uid,
     get_all_users,
     add_user,
     delete_user,
     issue_jwt_token,
     get_token_info,
+    get_public_key,
+    verify_jwt_token_with_public_key,
     get_database_list,
     get_current_database_id,
     add_database,
@@ -54,8 +57,32 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
             config: Configuration dictionary
         """
         self.config = config
-        self.engine, self.SessionLocal = init_database(config)
+        self.engine = None
+        self.SessionLocal = None
+        self.db_init_error = None
+        self.ensure_db_ready()
         logger.info("AuthService (gRPC) initialized")
+
+    def ensure_db_ready(self):
+        if self.SessionLocal is not None:
+            return True
+        try:
+            self.engine, self.SessionLocal = init_database(self.config)
+            self.db_init_error = None
+            return True
+        except Exception as e:
+            self.db_init_error = str(e)
+            logger.error(f"Auth db initialization failed: {e}")
+            return False
+
+    def open_session_or_fail(self, context=None):
+        if not self.ensure_db_ready():
+            message = f"Auth db is not ready: {self.db_init_error}"
+            if context is not None:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(message)
+            raise RuntimeError(message)
+        return self.SessionLocal()
     
     def Login(self, request, context):
         """
@@ -115,14 +142,19 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
         """
         session_token = request.session_token
         
-        session = self.SessionLocal()
+        session = self.open_session_or_fail(context)
         try:
-            # Call pure API function
             is_valid = verify_jwt_token(self.config, session, session_token)
             
             if is_valid:
-                # TODO: Extract username from token
-                username = "unknown"  # Placeholder
+                public_key = get_public_key(self.config, session)
+                result = verify_jwt_token_with_public_key(
+                    session_token,
+                    public_key,
+                    self.config.get('JWT_ALGORITHM', 'RS256'),
+                )
+                uid = result.get("claims", {}).get("uid")
+                username = get_username_of_uid(self.config, session, uid) if uid else ""
                 logger.info(f"✓ Token validated for user: {username}")
                 
                 return service_pb2.ValidateSessionResponse(
@@ -153,7 +185,7 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
         """
         session_token = request.session_token
         
-        session = self.SessionLocal()
+        session = self.open_session_or_fail(context)
         try:
             # TODO: Call pure API function to revoke token
             logger.info("Logout request processed")
@@ -184,7 +216,7 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
         List all users with their JWT token IDs.
         For management UI purposes.
         """
-        session = self.SessionLocal()
+        session = self.open_session_or_fail(context)
         try:
             users = get_all_users(self.config, session)
             
@@ -225,7 +257,7 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
         
         logger.info(f"Add user request for username: {username}")
         
-        session = self.SessionLocal()
+        session = self.open_session_or_fail(context)
         try:
             result = add_user(self.config, session, username, password)
             
@@ -268,7 +300,7 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
         
         logger.info(f"Delete user request for UID: {uid}")
         
-        session = self.SessionLocal()
+        session = self.open_session_or_fail(context)
         try:
             result = delete_user(self.config, session, uid=uid)
             
@@ -308,7 +340,7 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
         
         logger.info(f"Issue token request for UID: {uid}")
         
-        session = self.SessionLocal()
+        session = self.open_session_or_fail(context)
         try:
             jti, jwt_token = issue_jwt_token(self.config, session, uid=uid)
             
@@ -345,7 +377,7 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
         
         logger.info(f"Get token info request for JTI: {jti}")
         
-        session = self.SessionLocal()
+        session = self.open_session_or_fail(context)
         try:
             token_info = get_token_info(self.config, session, jti=jti)
             
@@ -551,7 +583,14 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
             if result['success']:
                 # Trigger database reconnection
                 logger.info(f"Database switched to ID {request.db_id}. Reinitializing connection...")
-                self.engine, self.SessionLocal = init_database(self.config, request.db_id)
+                self.engine = None
+                self.SessionLocal = None
+                self.db_init_error = None
+                if not self.ensure_db_ready():
+                    return service_pb2.ChangeCurrentDatabaseResponse(
+                        success=False,
+                        message=f"Database switched, but connection failed: {self.db_init_error}"
+                    )
                 logger.info("Database connection reinitialized successfully")
             
             return service_pb2.ChangeCurrentDatabaseResponse(

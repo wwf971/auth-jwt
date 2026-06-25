@@ -139,7 +139,7 @@ function App() {
         <div className="login-spacer" />
         <Login 
           data={manageStore}
-          title="Management Login"
+          title="Auth(Jwt) Management Console"
           onDataChangeRequest={manageStore.onDataChangeRequest}
           useAuthToken={true}
           showTokenAtLogin={true}
