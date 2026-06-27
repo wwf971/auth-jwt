@@ -11,7 +11,6 @@ This server:
 
 import logging
 import os
-import secrets
 import sys
 import time
 from datetime import datetime, timezone
@@ -41,6 +40,13 @@ else:
 from third_party.utils_python_global import _utils_file
 from config import compose_config
 from utils import setup_logging
+from api.api import init_database, get_token_user, check_user_permission
+from api.api_db import (
+	PERMISSION_CODE_USER_READ,
+	PERMISSION_CODE_USER_CREATE,
+	PERMISSION_CODE_USER_EDIT,
+	PERMISSION_CODE_USER_DELETE,
+)
 
 # Setup logging
 setup_logging()
@@ -61,6 +67,31 @@ def format_grpc_error(error, grpc_port):
 			return "Auth DB is not ready. Check the active DB endpoint in config/config.0.yaml, or switch to a reachable DB."
 		return f"gRPC service is not running on port {grpc_port}"
 	return str(error)
+
+def get_manage_request_token():
+	auth_header = request.headers.get('Authorization', '')
+	if auth_header.startswith('Bearer '):
+		return auth_header[len('Bearer '):].strip()
+	return request.headers.get('X-Auth-Token') or request.args.get('authToken') or ''
+
+def get_manage_user_with_permission(permission_code_required):
+	token = get_manage_request_token()
+	if not token:
+		return None, (jsonify({"code": -1, "message": "Auth token is required", "data": None}), 401)
+
+	engine, SessionLocal = init_database(config_current)
+	session = SessionLocal()
+	try:
+		user = get_token_user(config_current, session, token)
+		if not user:
+			return None, (jsonify({"code": -1, "message": "Invalid or expired auth token", "data": None}), 401)
+
+		if not check_user_permission(config_current, session, user["uid"], permission_code_required):
+			return None, (jsonify({"code": -1, "message": "Permission denied", "data": None}), 403)
+
+		return user, None
+	finally:
+		session.close()
 
 def load_config():
 	"""Load and compose configuration from all sources"""
@@ -234,6 +265,10 @@ def update_config_endpoint():
 def get_users():
 	"""Get all users by calling gRPC service"""
 	try:
+		_user_manage, auth_error = get_manage_user_with_permission(PERMISSION_CODE_USER_READ)
+		if auth_error:
+			return auth_error
+
 		# Get gRPC port
 		grpc_port = config_current.get('PORT_SERVICE_GRPC', 16200)
 		
@@ -250,7 +285,15 @@ def get_users():
 				"uid": user_info.uid,
 				"username": user_info.username,
 				"password_hash": user_info.password_hash,
-				"jwt_token_ids": list(user_info.jwt_token_ids)
+				"jwt_token_ids": list(user_info.jwt_token_ids),
+				"permission_codes": list(user_info.permission_codes),
+				"service_permissions": [
+					{
+						"service_id": item.service_id,
+						"permission_code": item.permission_code
+					}
+					for item in user_info.service_permissions
+				]
 			})
 		
 		channel.close()
@@ -266,7 +309,7 @@ def get_users():
 		logger.error(f"Error getting users: {e}")
 		return jsonify({
 			"code": -1,
-			"message": format_grpc_error(e, grpc_port),
+			"message": format_grpc_error(e, config_current.get('PORT_SERVICE_GRPC', 16200)),
 			"data": None
 		}), 500
 
@@ -275,9 +318,15 @@ def get_users():
 def add_user_endpoint():
 	"""Add a new user by calling gRPC service"""
 	try:
+		_user_manage, auth_error = get_manage_user_with_permission(PERMISSION_CODE_USER_CREATE)
+		if auth_error:
+			return auth_error
+
 		data = request.json
 		username = data.get('username')
 		password = data.get('password')
+		permission_codes = data.get('permission_codes') or []
+		service_permissions = data.get('service_permissions') or []
 		
 		if not username or not password:
 			return jsonify({
@@ -294,7 +343,18 @@ def add_user_endpoint():
 		stub = service_pb2_grpc.AuthServiceStub(channel)
 		
 		response = stub.AddUser(
-			service_pb2.AddUserRequest(username=username, password=password),
+			service_pb2.AddUserRequest(
+				username=username,
+				password=password,
+				permission_codes=permission_codes,
+				service_permissions=[
+					service_pb2.ServicePermissionAssignment(
+						service_id=item.get('service_id', ''),
+						permission_code=int(item.get('permission_code', 0))
+					)
+					for item in service_permissions
+				],
+			),
 			timeout=5
 		)
 		
@@ -318,7 +378,7 @@ def add_user_endpoint():
 		logger.error(f"Error adding user: {e}")
 		return jsonify({
 			"code": -1,
-			"message": format_grpc_error(e, grpc_port),
+			"message": format_grpc_error(e, config_current.get('PORT_SERVICE_GRPC', 16200)),
 			"data": None
 		}), 500
 
@@ -327,6 +387,10 @@ def add_user_endpoint():
 def delete_user_endpoint(uid):
 	"""Delete a user by calling gRPC service"""
 	try:
+		_user_manage, auth_error = get_manage_user_with_permission(PERMISSION_CODE_USER_DELETE)
+		if auth_error:
+			return auth_error
+
 		# Get gRPC port
 		grpc_port = config_current.get('PORT_SERVICE_GRPC', 16200)
 		
@@ -359,7 +423,154 @@ def delete_user_endpoint(uid):
 		logger.error(f"Error deleting user: {e}")
 		return jsonify({
 			"code": -1,
-			"message": format_grpc_error(e, grpc_port),
+			"message": format_grpc_error(e, config_current.get('PORT_SERVICE_GRPC', 16200)),
+			"data": None
+		}), 500
+
+
+@app_manage.route('/manage/api/users/<int:uid>/permissions', methods=['PUT'])
+def update_user_permissions_endpoint(uid):
+	"""Update user permission assignments by calling gRPC service"""
+	try:
+		_user_manage, auth_error = get_manage_user_with_permission(PERMISSION_CODE_USER_EDIT)
+		if auth_error:
+			return auth_error
+
+		data = request.json or {}
+		permission_codes = data.get('permission_codes') or []
+		service_permissions = data.get('service_permissions') or []
+
+		grpc_port = config_current.get('PORT_SERVICE_GRPC', 16200)
+		channel = grpc_lib.insecure_channel(f'localhost:{grpc_port}')
+		stub = service_pb2_grpc.AuthServiceStub(channel)
+
+		response = stub.UpdateUserPermissions(
+			service_pb2.UpdateUserPermissionsRequest(
+				uid=uid,
+				permission_codes=[int(code) for code in permission_codes],
+				service_permissions=[
+					service_pb2.ServicePermissionAssignment(
+						service_id=item.get('service_id', ''),
+						permission_code=int(item.get('permission_code', 0))
+					)
+					for item in service_permissions
+				],
+			),
+			timeout=5
+		)
+
+		channel.close()
+
+		if response.success:
+			return jsonify({"code": 0, "message": response.message, "data": None}), 200
+		return jsonify({"code": -1, "message": response.message, "data": None}), 400
+	except Exception as e:
+		logger.error(f"Error updating user permissions: {e}")
+		return jsonify({
+			"code": -1,
+			"message": format_grpc_error(e, config_current.get('PORT_SERVICE_GRPC', 16200)),
+			"data": None
+		}), 500
+
+
+@app_manage.route('/manage/api/permissions', methods=['GET'])
+def get_permissions_endpoint():
+	"""Get permission metadata by calling gRPC service"""
+	try:
+		_user_manage, auth_error = get_manage_user_with_permission(PERMISSION_CODE_USER_READ)
+		if auth_error:
+			return auth_error
+
+		grpc_port = config_current.get('PORT_SERVICE_GRPC', 16200)
+		channel = grpc_lib.insecure_channel(f'localhost:{grpc_port}')
+		stub = service_pb2_grpc.AuthServiceStub(channel)
+
+		response = stub.GetPermissionData(service_pb2.GetPermissionDataRequest(), timeout=5)
+		channel.close()
+
+		if not response.success:
+			return jsonify({"code": -1, "message": response.message, "data": None}), 400
+
+		return jsonify({
+			"code": 0,
+			"message": response.message,
+			"data": {
+				"permissions": [
+					{
+						"permission_code": item.permission_code,
+						"display_name": item.display_name,
+						"description": item.description
+					}
+					for item in response.permissions
+				],
+				"permission_includes": [
+					{
+						"permission_code": item.permission_code,
+						"permission_code_included": item.permission_code_included
+					}
+					for item in response.permission_includes
+				],
+				"service_permissions": [
+					{
+						"service_id": item.service_id,
+						"permission_code": item.permission_code,
+						"display_name": item.display_name,
+						"description": item.description
+					}
+					for item in response.service_permissions
+				],
+				"service_permission_includes": [
+					{
+						"service_id": item.service_id,
+						"permission_code": item.permission_code,
+						"permission_code_included": item.permission_code_included
+					}
+					for item in response.service_permission_includes
+				]
+			}
+		}), 200
+	except Exception as e:
+		logger.error(f"Error getting permissions: {e}")
+		return jsonify({
+			"code": -1,
+			"message": format_grpc_error(e, config_current.get('PORT_SERVICE_GRPC', 16200)),
+			"data": None
+		}), 500
+
+
+@app_manage.route('/manage/api/service_permissions', methods=['POST'])
+def declare_service_permission_endpoint():
+	"""Declare a service permission by calling gRPC service"""
+	try:
+		_user_manage, auth_error = get_manage_user_with_permission(PERMISSION_CODE_USER_EDIT)
+		if auth_error:
+			return auth_error
+
+		data = request.json or {}
+		grpc_port = config_current.get('PORT_SERVICE_GRPC', 16200)
+		channel = grpc_lib.insecure_channel(f'localhost:{grpc_port}')
+		stub = service_pb2_grpc.AuthServiceStub(channel)
+
+		response = stub.DeclareServicePermission(
+			service_pb2.DeclareServicePermissionRequest(
+				service_id=data.get('service_id', ''),
+				permission_code=int(data.get('permission_code', 0)),
+				display_name=data.get('display_name', ''),
+				description=data.get('description', ''),
+				permission_codes_included=[int(code) for code in data.get('permission_codes_included') or []],
+			),
+			timeout=5
+		)
+		channel.close()
+
+		if response.success:
+			return jsonify({"code": 0, "message": response.message, "data": None}), 200
+		return jsonify({"code": -1, "message": response.message, "data": None}), 400
+	except Exception as e:
+		logger.error(f"Error declaring service permission: {e}")
+		return jsonify({
+			"code": -1,
+			"message": format_grpc_error(e, config_current.get('PORT_SERVICE_GRPC', 16200)),
 			"data": None
 		}), 500
 
@@ -368,6 +579,10 @@ def delete_user_endpoint(uid):
 def issue_jwt_token():
 	"""Issue a new JWT token for a user by calling gRPC service"""
 	try:
+		_user_manage, auth_error = get_manage_user_with_permission(PERMISSION_CODE_USER_EDIT)
+		if auth_error:
+			return auth_error
+
 		data = request.json
 		uid = data.get('uid')
 		
@@ -413,7 +628,7 @@ def issue_jwt_token():
 		logger.error(f"Error issuing token: {e}")
 		return jsonify({
 			"code": -1,
-			"message": format_grpc_error(e, grpc_port),
+			"message": format_grpc_error(e, config_current.get('PORT_SERVICE_GRPC', 16200)),
 			"data": None
 		}), 500
 
@@ -422,6 +637,10 @@ def issue_jwt_token():
 def get_jwt_token(jti):
 	"""Get JWT token details by JTI by calling gRPC service"""
 	try:
+		_user_manage, auth_error = get_manage_user_with_permission(PERMISSION_CODE_USER_READ)
+		if auth_error:
+			return auth_error
+
 		# Get gRPC port
 		grpc_port = config_current.get('PORT_SERVICE_GRPC', 16200)
 		
@@ -460,7 +679,38 @@ def get_jwt_token(jti):
 		logger.error(f"Error getting token: {e}")
 		return jsonify({
 			"code": -1,
-			"message": format_grpc_error(e, grpc_port),
+			"message": format_grpc_error(e, config_current.get('PORT_SERVICE_GRPC', 16200)),
+			"data": None
+		}), 500
+
+
+@app_manage.route('/manage/api/tokens/<jti>', methods=['DELETE'])
+def delete_jwt_token(jti):
+	"""Delete JWT token by JTI by calling gRPC service"""
+	try:
+		_user_manage, auth_error = get_manage_user_with_permission(PERMISSION_CODE_USER_EDIT)
+		if auth_error:
+			return auth_error
+
+		grpc_port = config_current.get('PORT_SERVICE_GRPC', 16200)
+		channel = grpc_lib.insecure_channel(f'localhost:{grpc_port}')
+		stub = service_pb2_grpc.AuthServiceStub(channel)
+
+		response = stub.DeleteToken(
+			service_pb2.DeleteTokenRequest(jti=jti),
+			timeout=5
+		)
+
+		channel.close()
+
+		if response.success:
+			return jsonify({"code": 0, "message": response.message, "data": None}), 200
+		return jsonify({"code": -1, "message": response.message, "data": None}), 404
+	except Exception as e:
+		logger.error(f"Error deleting token: {e}")
+		return jsonify({
+			"code": -1,
+			"message": format_grpc_error(e, config_current.get('PORT_SERVICE_GRPC', 16200)),
 			"data": None
 		}), 500
 
@@ -506,7 +756,7 @@ def get_databases():
 		logger.error(f"Error getting databases: {e}")
 		return jsonify({
 			"code": -1,
-			"message": format_grpc_error(e, grpc_port),
+			"message": format_grpc_error(e, config_current.get('PORT_SERVICE_GRPC', 16200)),
 			"data": None
 		}), 500
 
@@ -713,36 +963,40 @@ def manage_login():
 		username = data.get('username')
 		password = data.get('password')
 		
-		# Get management credentials from config
-		manage_username = config_current.get('MANAGE_USERNAME')
-		manage_password = config_current.get('MANAGE_PASSWORD')
-		
-		if not manage_username or not manage_password:
+		if not username or not password:
 			return jsonify({
 				"code": -1,
-				"message": "Management account not found in config. Add an auth user with role manage.",
+				"message": "Username and password are required",
 				"data": None
-			}), 500
-		
-		# Validate credentials
-		if username == manage_username and password == manage_password:
+			}), 400
+
+		grpc_port = config_current.get('PORT_SERVICE_GRPC', 16200)
+		channel = grpc_lib.insecure_channel(f'localhost:{grpc_port}')
+		stub = service_pb2_grpc.AuthServiceStub(channel)
+		response = stub.Login(
+			service_pb2.LoginRequest(username=username, password=password),
+			timeout=5
+		)
+		channel.close()
+
+		if response.success:
 			logger.info(f"✓ Management login successful for user: {username}")
-			token = secrets.token_urlsafe(32)
 			
 			return jsonify({
 				"code": 0,
-				"message": "Login successful",
+				"message": response.message,
 				"data": {
-					"token": token,
-					"token_name": f"mgmt:{username}",
-					"username": username
+					"token": response.session_token,
+					"token_name": f"jwt:{username}",
+					"username": username,
+					"expires_at": response.expires_at
 				}
 			}), 200
 		else:
 			logger.warning(f"✗ Management login failed for user: {username}")
 			return jsonify({
 				"code": -1,
-				"message": "Invalid username or password",
+				"message": response.message,
 				"data": None
 			}), 401
 			
@@ -750,7 +1004,7 @@ def manage_login():
 		logger.error(f"Error in manage_login: {e}")
 		return jsonify({
 			"code": -2,
-			"message": str(e),
+			"message": format_grpc_error(e, config_current.get('PORT_SERVICE_GRPC', 16200)),
 			"data": None
 		}), 500
 

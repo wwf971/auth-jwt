@@ -19,11 +19,27 @@ from api.api_db import (
     db_delete_user,
     db_store_jwt_token,
     db_get_jwt_token,
+    db_delete_jwt_token,
     db_get_all_users,
     db_get_user_tokens,
+    db_get_permission_meta,
+    db_get_permission_include,
+    db_get_user_permissions,
+    db_set_user_permissions,
+    db_get_service_permission_meta,
+    db_get_service_permission_include,
+    db_get_user_service_permissions,
+    db_set_user_service_permissions,
+    db_upsert_service_permission_meta,
+    db_set_service_permission_include,
     db_get_active_key_pair,
     db_store_key_pair,
     db_get_key_pair_by_id,
+)
+from api.permission import (
+    has_permission,
+    has_service_permission,
+    validate_service_id,
 )
 
 
@@ -64,7 +80,7 @@ def login_user(config, username: str, password: str) -> dict:
             }
         
         # Generate JWT token
-        token, expires_at = issue_jwt_token(config, session, user.uid)
+        _jti, token, expires_at = issue_jwt_token(config, session, user.uid)
         
         return {
             "success": True,
@@ -83,7 +99,7 @@ def login_user(config, username: str, password: str) -> dict:
         session.close()
 
 
-def add_user(config, session, username: str, password: str) -> dict:
+def add_user(config, session, username: str, password: str, permission_codes: list[int] | None = None, service_permissions: list[dict] | None = None) -> dict:
     """
     Add a new user to the database with hashed password.
     
@@ -122,6 +138,8 @@ def add_user(config, session, username: str, password: str) -> dict:
         
         # Add user to database
         db_add_user(config, session, username, password_hash.decode('utf-8'), uid)
+        db_set_user_permissions(session, uid, permission_codes or [])
+        db_set_user_service_permissions(session, uid, service_permissions or [])
         
         return {
             "success": True,
@@ -358,7 +376,7 @@ def issue_jwt_token(config, session, uid: int) -> tuple:
         uid: User ID
         
     Returns:
-        tuple: (jti: str, token: str) - JWT ID and token
+        tuple: (jti: str, token: str, expires_at: int)
     """
     import jwt
     
@@ -395,7 +413,7 @@ def issue_jwt_token(config, session, uid: int) -> tuple:
     # Store token in database
     db_store_jwt_token(session, jti, uid, token, created_at, expires_at, timezone_offset)
     
-    return jti, token
+    return jti, token, expires_at
 
 def verify_jwt_token_with_public_key(jwt_token: str, public_key: str, algorithm: str = "RS256") -> dict:
     """
@@ -528,6 +546,39 @@ def verify_jwt_token(config, session, jwt_token: str) -> bool:
     
     return True
 
+def get_token_user(config, session, jwt_token: str) -> dict | None:
+    public_key = get_public_key(config, session)
+    algorithm = config.get('JWT_ALGORITHM', 'RS256')
+    result = verify_jwt_token_with_public_key(jwt_token, public_key, algorithm)
+
+    if not result["valid"]:
+        return None
+
+    claims = result["claims"]
+    jti = claims.get("jti")
+    uid = claims.get("uid")
+    if not uid:
+        return None
+
+    if jti:
+        token_record = db_get_jwt_token(session, jti)
+        if token_record and token_record.is_revoked:
+            return None
+
+    user = db_get_user_by_uid(session, uid)
+    if not user:
+        return None
+
+    return {
+        "uid": user.uid,
+        "username": user.name,
+        "permission_codes": [item.permission_code for item in db_get_user_permissions(session, user.uid)],
+        "service_permissions": [
+            {"service_id": item.service_id, "permission_code": item.permission_code}
+            for item in db_get_user_service_permissions(session, user.uid)
+        ],
+    }
+
 def get_all_users(config, session) -> list:
     """
     Get all users from database with their JWT tokens.
@@ -548,14 +599,129 @@ def get_all_users(config, session) -> list:
         tokens = db_get_user_tokens(session, user.uid)
         jwt_token_ids = [token.jti for token in tokens]
         
+        permission_codes = [item.permission_code for item in db_get_user_permissions(session, user.uid)]
+        service_permissions = [
+            {"service_id": item.service_id, "permission_code": item.permission_code}
+            for item in db_get_user_service_permissions(session, user.uid)
+        ]
+
         result.append({
             "uid": user.uid,
             "username": user.name,
             "password_hash": user.password,
-            "jwt_token_ids": jwt_token_ids
+            "jwt_token_ids": jwt_token_ids,
+            "permission_codes": permission_codes,
+            "service_permissions": service_permissions,
         })
     
     return result
+
+
+def get_permission_data(config, session) -> dict:
+    return {
+        "permissions": [
+            {
+                "permission_code": item.permission_code,
+                "display_name": item.display_name,
+                "description": item.description,
+            }
+            for item in db_get_permission_meta(session)
+        ],
+        "permission_includes": [
+            {
+                "permission_code": item.permission_code,
+                "permission_code_included": item.permission_code_included,
+            }
+            for item in db_get_permission_include(session)
+        ],
+        "service_permissions": [
+            {
+                "service_id": item.service_id,
+                "permission_code": item.permission_code,
+                "display_name": item.display_name,
+                "description": item.description,
+            }
+            for item in db_get_service_permission_meta(session)
+        ],
+        "service_permission_includes": [
+            {
+                "service_id": item.service_id,
+                "permission_code": item.permission_code,
+                "permission_code_included": item.permission_code_included,
+            }
+            for item in db_get_service_permission_include(session)
+        ],
+    }
+
+
+def update_user_permissions(config, session, uid: int, permission_codes: list[int], service_permissions: list[dict]) -> dict:
+    user = db_get_user_by_uid(session, uid)
+    if not user:
+        return {"success": False, "message": f"User with UID {uid} not found"}
+
+    try:
+        db_set_user_permissions(session, uid, permission_codes or [])
+        db_set_user_service_permissions(session, uid, service_permissions or [])
+        return {"success": True, "message": "User permissions updated"}
+    except Exception as e:
+        session.rollback()
+        return {"success": False, "message": str(e)}
+
+
+def declare_service_permission(
+    config,
+    session,
+    service_id: str,
+    permission_code: int,
+    display_name: str,
+    description: str,
+    permission_codes_included: list[int] | None = None,
+) -> dict:
+    service_id = (service_id or "").strip()
+    if not validate_service_id(service_id):
+        return {"success": False, "message": "Invalid service id"}
+
+    if permission_code <= 0:
+        return {"success": False, "message": "Permission code must be positive"}
+
+    try:
+        db_upsert_service_permission_meta(
+            session,
+            service_id,
+            permission_code,
+            display_name or str(permission_code),
+            description or "",
+        )
+        db_set_service_permission_include(session, service_id, permission_code, permission_codes_included or [])
+        return {"success": True, "message": "Service permission declared"}
+    except Exception as e:
+        session.rollback()
+        return {"success": False, "message": str(e)}
+
+
+def check_user_permission(config, session, uid: int, permission_code: int) -> bool:
+    permission_codes = [item.permission_code for item in db_get_user_permissions(session, uid)]
+    permission_include_by_code = {}
+    for item in db_get_permission_include(session):
+        permission_include_by_code.setdefault(item.permission_code, []).append(item.permission_code_included)
+    return has_permission(permission_codes, permission_code, permission_include_by_code)
+
+
+def check_user_service_permission(config, session, uid: int, service_id: str, permission_code: int) -> bool:
+    service_permissions = [
+        {"service_id": item.service_id, "permission_code": item.permission_code}
+        for item in db_get_user_service_permissions(session, uid)
+    ]
+    permission_include_by_service_code = {}
+    for item in db_get_service_permission_include(session):
+        include_by_code = permission_include_by_service_code.setdefault(item.service_id, {})
+        include_by_code.setdefault(item.permission_code, []).append(item.permission_code_included)
+    return has_service_permission(
+        service_permissions,
+        service_id,
+        permission_code,
+        permission_include_by_service_code,
+    )
 
 def get_token_info(config, session, jti: str) -> dict | None:
     """
@@ -584,6 +750,17 @@ def get_token_info(config, session, jti: str) -> dict | None:
         "is_revoked": token.is_revoked,
         "revoked_at": token.revoked_at if token.revoked_at else None
     }
+
+
+def delete_token(config, session, jti: str) -> dict:
+    try:
+        is_deleted = db_delete_jwt_token(session, jti)
+        if not is_deleted:
+            return {"success": False, "message": "Token not found"}
+        return {"success": True, "message": "Token deleted"}
+    except Exception as e:
+        session.rollback()
+        return {"success": False, "message": str(e)}
 
 
 def get_database_list(config) -> list:

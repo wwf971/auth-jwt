@@ -25,6 +25,37 @@ config/config.0.yaml
 - stores creation and expiration timestamps
 - records whether token is revoked
 
+When one user is deleted through the backend API, that user's token rows are deleted before the user row is removed.
+
+`permission_meta`
+
+- stores built-in auth permission code
+- stores display name and description
+
+`permission_include`
+
+- stores built-in permission inheritance
+- lets one permission include other permission codes
+
+`user_permission`
+
+- assigns built-in auth permissions to users
+
+`service_permission_meta`
+
+- declares permission codes owned by external services
+- stores `service_id` and integer `permission_code` separately
+
+`service_permission_include`
+
+- stores permission inheritance inside one external service
+
+`user_service_permission`
+
+- assigns service-scoped permissions to users
+
+Service permission rows describe what an external service can check. User permission rows describe what a user can do.
+
 `key_pairs`
 
 - stores RSA private and public key material

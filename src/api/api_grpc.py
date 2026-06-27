@@ -31,6 +31,12 @@ from api.api import (
     delete_user,
     issue_jwt_token,
     get_token_info,
+    delete_token,
+    get_permission_data,
+    update_user_permissions,
+    declare_service_permission,
+    check_user_permission,
+    check_user_service_permission,
     get_public_key,
     verify_jwt_token_with_public_key,
     get_database_list,
@@ -227,7 +233,15 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
                     uid=user['uid'],
                     username=user['username'],
                     password_hash=user['password_hash'],
-                    jwt_token_ids=user['jwt_token_ids']
+                    jwt_token_ids=user['jwt_token_ids'],
+                    permission_codes=user.get('permission_codes', []),
+                    service_permissions=[
+                        service_pb2.ServicePermissionAssignment(
+                            service_id=item.get('service_id', ''),
+                            permission_code=item.get('permission_code', 0),
+                        )
+                        for item in user.get('service_permissions', [])
+                    ],
                 )
                 user_infos.append(user_info)
             
@@ -254,12 +268,17 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
         """
         username = request.username
         password = request.password
+        permission_codes = list(request.permission_codes)
+        service_permissions = [
+            {"service_id": item.service_id, "permission_code": item.permission_code}
+            for item in request.service_permissions
+        ]
         
         logger.info(f"Add user request for username: {username}")
         
         session = self.open_session_or_fail(context)
         try:
-            result = add_user(self.config, session, username, password)
+            result = add_user(self.config, session, username, password, permission_codes, service_permissions)
             
             if result["success"]:
                 logger.info(f"✓ User '{username}' added with UID {result['uid']}")
@@ -324,6 +343,143 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
             )
         finally:
             session.close()
+
+    def UpdateUserPermissions(self, request, context):
+        uid = request.uid
+        permission_codes = list(request.permission_codes)
+        service_permissions = [
+            {"service_id": item.service_id, "permission_code": item.permission_code}
+            for item in request.service_permissions
+        ]
+
+        session = self.open_session_or_fail(context)
+        try:
+            result = update_user_permissions(
+                self.config,
+                session,
+                uid,
+                permission_codes,
+                service_permissions,
+            )
+            return service_pb2.UpdateUserPermissionsResponse(
+                success=result["success"],
+                message=result["message"],
+            )
+        except Exception as e:
+            logger.error(f"Error updating permissions for UID {uid}: {e}")
+            return service_pb2.UpdateUserPermissionsResponse(
+                success=False,
+                message=f"Internal error: {str(e)}",
+            )
+        finally:
+            session.close()
+
+    def GetPermissionData(self, request, context):
+        session = self.open_session_or_fail(context)
+        try:
+            data = get_permission_data(self.config, session)
+            return service_pb2.GetPermissionDataResponse(
+                success=True,
+                message="Permission data retrieved",
+                permissions=[
+                    service_pb2.PermissionMetaInfo(
+                        permission_code=item["permission_code"],
+                        display_name=item["display_name"],
+                        description=item["description"],
+                    )
+                    for item in data["permissions"]
+                ],
+                permission_includes=[
+                    service_pb2.PermissionIncludeInfo(
+                        permission_code=item["permission_code"],
+                        permission_code_included=item["permission_code_included"],
+                    )
+                    for item in data["permission_includes"]
+                ],
+                service_permissions=[
+                    service_pb2.ServicePermissionMetaInfo(
+                        service_id=item["service_id"],
+                        permission_code=item["permission_code"],
+                        display_name=item["display_name"],
+                        description=item["description"],
+                    )
+                    for item in data["service_permissions"]
+                ],
+                service_permission_includes=[
+                    service_pb2.ServicePermissionIncludeInfo(
+                        service_id=item["service_id"],
+                        permission_code=item["permission_code"],
+                        permission_code_included=item["permission_code_included"],
+                    )
+                    for item in data["service_permission_includes"]
+                ],
+            )
+        except Exception as e:
+            logger.error(f"Error getting permission data: {e}")
+            return service_pb2.GetPermissionDataResponse(
+                success=False,
+                message=f"Internal error: {str(e)}",
+            )
+        finally:
+            session.close()
+
+    def DeclareServicePermission(self, request, context):
+        session = self.open_session_or_fail(context)
+        try:
+            result = declare_service_permission(
+                self.config,
+                session,
+                request.service_id,
+                request.permission_code,
+                request.display_name,
+                request.description,
+                list(request.permission_codes_included),
+            )
+            return service_pb2.DeclareServicePermissionResponse(
+                success=result["success"],
+                message=result["message"],
+            )
+        except Exception as e:
+            logger.error(f"Error declaring service permission: {e}")
+            return service_pb2.DeclareServicePermissionResponse(
+                success=False,
+                message=f"Internal error: {str(e)}",
+            )
+        finally:
+            session.close()
+
+    def CheckPermission(self, request, context):
+        session = self.open_session_or_fail(context)
+        try:
+            if request.service_id:
+                is_permitted = check_user_service_permission(
+                    self.config,
+                    session,
+                    request.uid,
+                    request.service_id,
+                    request.permission_code,
+                )
+            else:
+                is_permitted = check_user_permission(
+                    self.config,
+                    session,
+                    request.uid,
+                    request.permission_code,
+                )
+            return service_pb2.CheckPermissionResponse(
+                success=True,
+                message="Permission checked",
+                permitted=is_permitted,
+            )
+        except Exception as e:
+            logger.error(f"Error checking permission: {e}")
+            return service_pb2.CheckPermissionResponse(
+                success=False,
+                message=f"Internal error: {str(e)}",
+                permitted=False,
+            )
+        finally:
+            session.close()
     
     def IssueToken(self, request, context):
         """
@@ -342,7 +498,7 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
         
         session = self.open_session_or_fail(context)
         try:
-            jti, jwt_token = issue_jwt_token(self.config, session, uid=uid)
+            jti, jwt_token, _expires_at = issue_jwt_token(self.config, session, uid=uid)
             
             logger.info(f"✓ Token issued for UID {uid}, JTI: {jti}")
             return service_pb2.IssueTokenResponse(
@@ -413,6 +569,26 @@ class AuthServiceImplementation(service_pb2_grpc.AuthServiceServicer):
                 token="",
                 created_at=0,
                 expires_at=0
+            )
+        finally:
+            session.close()
+
+    def DeleteToken(self, request, context):
+        jti = request.jti
+        logger.info(f"Delete token request for JTI: {jti}")
+
+        session = self.open_session_or_fail(context)
+        try:
+            result = delete_token(self.config, session, jti=jti)
+            return service_pb2.DeleteTokenResponse(
+                success=result["success"],
+                message=result["message"],
+            )
+        except Exception as e:
+            logger.error(f"Error deleting token for JTI {jti}: {e}")
+            return service_pb2.DeleteTokenResponse(
+                success=False,
+                message=f"Internal error: {str(e)}",
             )
         finally:
             session.close()

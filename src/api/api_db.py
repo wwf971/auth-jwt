@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Database interaction layer for authentication service.
 All functions here interact with the database.
@@ -11,7 +13,7 @@ sys.path += [
   dir_path_src,
 ]
 from third_party.utils_python_global import _utils_file
-from sqlalchemy import Column, Integer, BigInteger, String, Boolean, ForeignKey, create_engine
+from sqlalchemy import Column, Integer, BigInteger, String, Boolean, ForeignKey, ForeignKeyConstraint, create_engine
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import bcrypt
@@ -21,17 +23,92 @@ from datetime import datetime
 
 Base = declarative_base()
 
+PERMISSION_CODE_USER_READ = 1001
+PERMISSION_CODE_USER_CREATE = 1002
+PERMISSION_CODE_USER_EDIT = 1003
+PERMISSION_CODE_USER_DELETE = 1004
+PERMISSION_CODE_USER_MANAGE = 1099
+
+PERMISSION_META_DEFAULT = [
+    (PERMISSION_CODE_USER_READ, "User Read", "Read users and their permission assignments."),
+    (PERMISSION_CODE_USER_CREATE, "User Create", "Create users."),
+    (PERMISSION_CODE_USER_EDIT, "User Edit", "Edit users and user permission assignments."),
+    (PERMISSION_CODE_USER_DELETE, "User Delete", "Delete users."),
+    (PERMISSION_CODE_USER_MANAGE, "User Manage", "All user management permissions."),
+]
+
+PERMISSION_INCLUDE_DEFAULT = [
+    (PERMISSION_CODE_USER_MANAGE, PERMISSION_CODE_USER_READ),
+    (PERMISSION_CODE_USER_MANAGE, PERMISSION_CODE_USER_CREATE),
+    (PERMISSION_CODE_USER_MANAGE, PERMISSION_CODE_USER_EDIT),
+    (PERMISSION_CODE_USER_MANAGE, PERMISSION_CODE_USER_DELETE),
+]
+
 class User(Base):
     __tablename__ = "users"
     uid = Column(Integer, primary_key=True)
     name = Column(String, unique=True, nullable=False)
     password = Column(String, nullable=False)
 
+class PermissionMeta(Base):
+    __tablename__ = "permission_meta"
+    permission_code = Column(Integer, primary_key=True)
+    display_name = Column(String, nullable=False)
+    description = Column(String, nullable=False)
+
+class PermissionInclude(Base):
+    __tablename__ = "permission_include"
+    permission_code = Column(Integer, ForeignKey("permission_meta.permission_code", ondelete="CASCADE"), primary_key=True)
+    permission_code_included = Column(Integer, ForeignKey("permission_meta.permission_code", ondelete="CASCADE"), primary_key=True)
+
+class UserPermission(Base):
+    __tablename__ = "user_permission"
+    uid = Column(Integer, ForeignKey("users.uid", ondelete="CASCADE"), primary_key=True)
+    permission_code = Column(Integer, ForeignKey("permission_meta.permission_code", ondelete="CASCADE"), primary_key=True)
+
+class ServicePermissionMeta(Base):
+    __tablename__ = "service_permission_meta"
+    service_id = Column(String, primary_key=True)
+    permission_code = Column(Integer, primary_key=True)
+    display_name = Column(String, nullable=False)
+    description = Column(String, nullable=False)
+
+class ServicePermissionInclude(Base):
+    __tablename__ = "service_permission_include"
+    service_id = Column(String, primary_key=True)
+    permission_code = Column(Integer, primary_key=True)
+    permission_code_included = Column(Integer, primary_key=True)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["service_id", "permission_code"],
+            ["service_permission_meta.service_id", "service_permission_meta.permission_code"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["service_id", "permission_code_included"],
+            ["service_permission_meta.service_id", "service_permission_meta.permission_code"],
+            ondelete="CASCADE",
+        ),
+    )
+
+class UserServicePermission(Base):
+    __tablename__ = "user_service_permission"
+    uid = Column(Integer, ForeignKey("users.uid", ondelete="CASCADE"), primary_key=True)
+    service_id = Column(String, primary_key=True)
+    permission_code = Column(Integer, primary_key=True)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["service_id", "permission_code"],
+            ["service_permission_meta.service_id", "service_permission_meta.permission_code"],
+            ondelete="CASCADE",
+        ),
+    )
+
 class JWTToken(Base):
     __tablename__ = "jwt_tokens"
     jti = Column(String(36), primary_key=True, unique=True, nullable=False)
         # jwt token id
-    uid = Column(Integer, ForeignKey('users.uid'), nullable=False)
+    uid = Column(Integer, ForeignKey('users.uid', ondelete="CASCADE"), nullable=False)
     
     # Unix timestamps as 64-bit integers
     created_at = Column(BigInteger, default=lambda: int(datetime.utcnow().timestamp()), nullable=False)
@@ -250,7 +327,93 @@ def init_database(config, db_id=None):
     logger.info("Database tables created/verified")
     
     SessionLocal = sessionmaker(bind=engine)
+    session = SessionLocal()
+    try:
+        db_seed_builtin_permissions(session)
+        db_sync_config_manage_users(config, session)
+        db_grant_first_user_manage_permission(session)
+    finally:
+        session.close()
     return engine, SessionLocal
+
+
+def db_seed_builtin_permissions(session):
+    for permission_code, display_name, description in PERMISSION_META_DEFAULT:
+        item = session.query(PermissionMeta).filter_by(permission_code=permission_code).first()
+        if item:
+            item.display_name = display_name
+            item.description = description
+        else:
+            session.add(PermissionMeta(
+                permission_code=permission_code,
+                display_name=display_name,
+                description=description,
+            ))
+
+    for permission_code, permission_code_included in PERMISSION_INCLUDE_DEFAULT:
+        item = session.query(PermissionInclude).filter_by(
+            permission_code=permission_code,
+            permission_code_included=permission_code_included,
+        ).first()
+        if not item:
+            session.add(PermissionInclude(
+                permission_code=permission_code,
+                permission_code_included=permission_code_included,
+            ))
+
+    session.commit()
+
+
+def db_grant_first_user_manage_permission(session):
+    is_permission_assigned = session.query(UserPermission).first() is not None
+    if is_permission_assigned:
+        return
+
+    user = session.query(User).order_by(User.uid.asc()).first()
+    if not user:
+        return
+
+    session.add(UserPermission(uid=user.uid, permission_code=PERMISSION_CODE_USER_MANAGE))
+    session.commit()
+
+
+def db_sync_config_manage_users(config, session):
+    user_list = config.get("AUTH_USERS") or []
+    for user_item in user_list:
+        role_list = user_item.get("roles") or []
+        if "manage" not in role_list:
+            continue
+
+        username = str(user_item.get("username") or "").strip()
+        password = str(user_item.get("password") or "")
+        if not username or not password:
+            continue
+
+        bcrypt_rounds = config.get("BCRYPT_ROUNDS", 12)
+        password_hash = bcrypt.hashpw(
+            password.encode("utf-8"),
+            bcrypt.gensalt(rounds=bcrypt_rounds),
+        ).decode("utf-8")
+
+        user = db_get_user_by_username(session, username)
+        if user:
+            user.password = password_hash
+        else:
+            user = User(uid=gen_uid(config, session), name=username, password=password_hash)
+            session.add(user)
+            session.flush()
+
+        permission = session.query(UserPermission).filter_by(
+            uid=user.uid,
+            permission_code=PERMISSION_CODE_USER_MANAGE,
+        ).first()
+        if not permission:
+            session.add(UserPermission(
+                uid=user.uid,
+                permission_code=PERMISSION_CODE_USER_MANAGE,
+            ))
+
+    session.commit()
 
 
 def gen_uid(config, session) -> int:
@@ -333,6 +496,8 @@ def db_delete_user(session, username: str = None, uid: int = None) -> bool:
     if user:
         # Also delete associated JWT tokens
         session.query(JWTToken).filter(JWTToken.uid == user.uid).delete()
+        session.query(UserPermission).filter(UserPermission.uid == user.uid).delete()
+        session.query(UserServicePermission).filter(UserServicePermission.uid == user.uid).delete()
         session.delete(user)
         session.commit()
         return True
@@ -370,6 +535,15 @@ def db_get_jwt_token(session, jti: str):
     return session.query(JWTToken).filter_by(jti=jti).first()
 
 
+def db_delete_jwt_token(session, jti: str) -> bool:
+    token = db_get_jwt_token(session, jti)
+    if not token:
+        return False
+    session.delete(token)
+    session.commit()
+    return True
+
+
 def db_get_all_users(session) -> list:
     """
     Get all users from database with their JWT tokens.
@@ -398,6 +572,121 @@ def db_get_user_tokens(session, uid: int) -> list:
         JWTToken.uid == uid,
         JWTToken.is_revoked == False
     ).all()
+
+
+def db_get_permission_meta(session) -> list:
+    return session.query(PermissionMeta).order_by(PermissionMeta.permission_code.asc()).all()
+
+
+def db_get_permission_include(session) -> list:
+    return session.query(PermissionInclude).order_by(
+        PermissionInclude.permission_code.asc(),
+        PermissionInclude.permission_code_included.asc(),
+    ).all()
+
+
+def db_get_user_permissions(session, uid: int) -> list:
+    return session.query(UserPermission).filter(
+        UserPermission.uid == uid,
+    ).order_by(UserPermission.permission_code.asc()).all()
+
+
+def db_set_user_permissions(session, uid: int, permission_codes: list[int]):
+    session.query(UserPermission).filter(UserPermission.uid == uid).delete()
+    for permission_code in sorted(set(permission_codes or [])):
+        permission_meta = session.query(PermissionMeta).filter_by(permission_code=permission_code).first()
+        if not permission_meta:
+            raise ValueError(f"Unknown permission code: {permission_code}")
+        session.add(UserPermission(uid=uid, permission_code=permission_code))
+    session.commit()
+
+
+def db_get_service_permission_meta(session) -> list:
+    return session.query(ServicePermissionMeta).order_by(
+        ServicePermissionMeta.service_id.asc(),
+        ServicePermissionMeta.permission_code.asc(),
+    ).all()
+
+
+def db_get_service_permission_include(session) -> list:
+    return session.query(ServicePermissionInclude).order_by(
+        ServicePermissionInclude.service_id.asc(),
+        ServicePermissionInclude.permission_code.asc(),
+        ServicePermissionInclude.permission_code_included.asc(),
+    ).all()
+
+
+def db_get_user_service_permissions(session, uid: int) -> list:
+    return session.query(UserServicePermission).filter(
+        UserServicePermission.uid == uid,
+    ).order_by(
+        UserServicePermission.service_id.asc(),
+        UserServicePermission.permission_code.asc(),
+    ).all()
+
+
+def db_set_user_service_permissions(session, uid: int, service_permission_items: list[dict]):
+    session.query(UserServicePermission).filter(UserServicePermission.uid == uid).delete()
+    service_permission_seen = set()
+    for item in service_permission_items or []:
+        service_id = str(item.get("service_id", "")).strip()
+        permission_code = int(item.get("permission_code"))
+        service_permission_key = (service_id, permission_code)
+        if service_permission_key in service_permission_seen:
+            continue
+        service_permission_seen.add(service_permission_key)
+        permission_meta = session.query(ServicePermissionMeta).filter_by(
+            service_id=service_id,
+            permission_code=permission_code,
+        ).first()
+        if not permission_meta:
+            raise ValueError(f"Unknown service permission: {service_id}::{permission_code}")
+        session.add(UserServicePermission(
+            uid=uid,
+            service_id=service_id,
+            permission_code=permission_code,
+        ))
+    session.commit()
+
+
+def db_upsert_service_permission_meta(session, service_id: str, permission_code: int, display_name: str, description: str):
+    item = session.query(ServicePermissionMeta).filter_by(
+        service_id=service_id,
+        permission_code=permission_code,
+    ).first()
+    if item:
+        item.display_name = display_name
+        item.description = description
+    else:
+        item = ServicePermissionMeta(
+            service_id=service_id,
+            permission_code=permission_code,
+            display_name=display_name,
+            description=description,
+        )
+        session.add(item)
+    session.commit()
+    return item
+
+
+def db_set_service_permission_include(session, service_id: str, permission_code: int, permission_codes_included: list[int]):
+    session.query(ServicePermissionInclude).filter(
+        ServicePermissionInclude.service_id == service_id,
+        ServicePermissionInclude.permission_code == permission_code,
+    ).delete()
+    for permission_code_included in sorted(set(permission_codes_included or [])):
+        permission_meta = session.query(ServicePermissionMeta).filter_by(
+            service_id=service_id,
+            permission_code=permission_code_included,
+        ).first()
+        if not permission_meta:
+            raise ValueError(f"Unknown included service permission: {service_id}::{permission_code_included}")
+        session.add(ServicePermissionInclude(
+            service_id=service_id,
+            permission_code=permission_code,
+            permission_code_included=permission_code_included,
+        ))
+    session.commit()
 
 
 def db_get_active_key_pair(session):

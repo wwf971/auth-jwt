@@ -13,6 +13,15 @@ This makes a basic SSO flow possible. Each app does not need to keep its own use
 
 ## Core Concepts
 
+`auth-jwt` has four core concepts:
+
+- User is the identity.
+- Token proves that the user has signed in.
+- Permission says what the user can do.
+- Service is an app that uses the auth service.
+
+Authentication answers "who is this user". Authorization answers "can this user do this action". A service should check both when an operation is protected.
+
 ### User
 
 User is the identity that signs in to the system.
@@ -24,6 +33,32 @@ Basic properties:
 - `password`: stored as bcrypt hash in DB
 
 The auth service owns the user table. Other services should not duplicate user password checking. They should trust token verification result from this service.
+
+Users can carry permission assignments. A built-in permission applies to this auth service itself, such as creating or deleting users. A service-scoped permission applies to one external service.
+
+### Service
+
+Service means an external app that uses this auth service, such as a file service or a workflow service.
+
+A service is not the same thing as a user. A service does not sign in as a person in the normal flow. A service sends users to this auth service for login, receives or verifies JWT tokens, and checks if the signed-in user has the permission needed for one action.
+
+When a service needs its own permission, it declares a service id and integer permission code. The displayed form is:
+
+```text
+serviceId::permissionCode
+```
+
+The auth database stores `service_id` and `permission_code` as separate values. The permission assignment still belongs to a user.
+
+### Permission
+
+Permission is a code that says what a user can do.
+
+Built-in auth permissions are integer codes owned by the auth service. Service-scoped permissions are integer codes under one service id. A service-scoped permission is declared by a service, then assigned to users.
+
+One permission can include other permissions. For example, user manage permission includes user read, user create, user edit, and user delete. Permission check therefore does not only compare one code with another code. It checks whether any assigned permission directly or indirectly includes the required permission.
+
+JWT tokens do not carry permission lists. The auth service keeps permission assignments in DB and checks them when management APIs or other services ask for authorization.
 
 ### Token
 
@@ -62,6 +97,9 @@ It provides:
 - login API to issue token
 - verify API to check token
 - management console to operate users, DB endpoints, and token records
+- permission metadata and permission check API
+
+For more details about permission schema, built-in permission codes, and service-scoped permission declaration, see `authorization.md`.
 
 ## SSO Flow
 
@@ -72,7 +110,8 @@ A typical service uses `auth-jwt` like this:
 3. The browser stores the token.
 4. Browser requests to other services include the token.
 5. Each service verifies the token with `auth-jwt`.
-6. If token verification succeeds, the service accepts the request.
+6. If the action needs authorization, the service checks whether the user has the needed permission.
+7. If token verification and permission check pass, the service accepts the request.
 
 The token contains claims such as user id, token id, issue time, and expiration time. The token is signed by the auth service.
 
@@ -102,8 +141,6 @@ The management console is for operating the auth service itself:
 - issue and inspect JWT tokens
 - view current runtime config
 
-The console login is not the same thing as SSO login for application users. The console login only protects the management page.
-
-The console session token is a random management-page token. It is different from an application JWT token. It should not be used by other services for SSO.
+The console uses DB users and JWT login too. Management operations then check built-in auth permissions, such as user create or user delete.
 
 See `deploy.md` for local launch and endpoint information.

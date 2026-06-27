@@ -85,11 +85,13 @@ for port in "$BACKEND_PORT" "$((BACKEND_PORT + 1))" "$((BACKEND_PORT + 2))" "$((
 done
 
 if [[ "$is_dry_run" == true ]]; then
+  echo "Dry run: would compile proto: bash \"$ROOT_DIR/script/compile_proto.sh\""
   echo "Dry run: would run frontend build: pnpm --dir \"$MANAGE_DIR\" run build"
   echo "Dry run: would run local server: PORT=\"$BACKEND_PORT\" DIR_BASE=\"$ROOT_DIR\" bash \"$ROOT_DIR/script/start-dev.sh\""
   exit 0
 fi
 
+bash "$ROOT_DIR/script/compile_proto.sh"
 pnpm --dir "$MANAGE_DIR" install
 pnpm --dir "$MANAGE_DIR" run build
 exec env PORT="$BACKEND_PORT" DIR_BASE="$ROOT_DIR" bash "$ROOT_DIR/script/start-dev.sh"

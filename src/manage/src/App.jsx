@@ -1,8 +1,11 @@
 import { useEffect, useRef } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Login, TabsOnTop, KeyValues, ConfigPanel } from '@wwf971/react-comp-misc'
+import { Login, TabsOnTop, ConfigPanel, FolderView } from '@wwf971/react-comp-misc'
 import ServerStatus from './ServerStatus'
 import DbPanel from './DbPanel'
+import UserCreate from './UserCreate'
+import UserPermissionEdit from './UserPermissionEdit'
+import ServicePermissionCreate from './ServicePermissionCreate'
 import { manageStore } from './store'
 import './App.css'
 
@@ -133,6 +136,26 @@ function App() {
     }
   }
 
+  const handleSelectedTokenView = async () => {
+    const jti = manageStore.userSelected?.jwt_token_ids?.[0]
+    if (jti) {
+      await handleTokenView(jti)
+    }
+  }
+
+  const handleUserFolderEvent = (eventType, eventData) => {
+    const result = manageStore.handleUserFolderEvent(eventType, eventData)
+    if (
+      eventType === 'rowContextMenuItemClick'
+      && eventData.item?.id === 'view_tokens'
+      && tabsOnTopRef.current
+    ) {
+      tabsOnTopRef.current.switchTab('jwt tokens')
+      handleSelectedTokenView()
+    }
+    return result
+  }
+
   if (!manageStore.isLoggedIn) {
     return (
       <div className="login-page">
@@ -150,6 +173,9 @@ function App() {
 
   return (
     <div className="dashboard">
+      <UserCreate />
+      <UserPermissionEdit />
+      <ServicePermissionCreate />
       <header className="dashboard-header">
         <div className="dashboard-header-inner">
           <div className="page-title">User Management Dashboard</div>
@@ -165,112 +191,92 @@ function App() {
           <TabsOnTop ref={tabsOnTopRef} defaultTab="users">
             <TabsOnTop.Tab label="Users">
               {manageStore.error && <div className="error-message">{manageStore.error}</div>}
-
-              <div className="table-container">
-                <table className="users-table">
-                  <thead>
-                    <tr>
-                      <th>UID</th>
-                      <th>Username</th>
-                      <th>Password Hash</th>
-                      <th>JWT Tokens</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {manageStore.users.length === 0 ? (
-                      <tr>
-                        <td colSpan="5" className="no-data">No users found</td>
-                      </tr>
-                    ) : (
-                      manageStore.users.map((user) => (
-                        <tr key={user.uid}>
-                          <td>{user.uid}</td>
-                          <td>{user.username}</td>
-                          <td className="password-hash">{user.password_hash}</td>
-                          <td className="token-ids">
-                            {user.jwt_token_ids.length > 0 ? (
-                              <div className="token-list">
-                                {user.jwt_token_ids.map((jti, idx) => (
-                                  <button
-                                    key={idx}
-                                    className="token-info-btn"
-                                    title={jti}
-                                    onClick={() => handleTokenView(jti)}
-                                  >
-                                    {jti.substring(0, 8)}...
-                                  </button>
-                                ))}
-                              </div>
-                            ) : (
-                              <button 
-                                className="action-btn issue-btn"
-                                onClick={() => manageStore.issueToken(user.uid)}
-                                disabled={manageStore.isLoading}
-                              >
-                                Issue
-                              </button>
-                            )}
-                          </td>
-                          <td>
-                            <button 
-                              onClick={() => manageStore.deleteUser(user.uid)}
-                              className="action-btn delete-btn"
-                              disabled={manageStore.isLoading}
-                            >
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              <div className="user-create-row">
-                <input
-                  className="text-input"
-                  value={manageStore.userDraft.username}
-                  onChange={(event) => manageStore.setUserDraftField('username', event.target.value)}
-                  placeholder="username"
+              <div className="user-panel">
+                <div className="user-panel-title-row">
+                  <div className="section-title">Users</div>
+                  <div className="user-selected-text">
+                    {manageStore.userSelected ? `Selected: ${manageStore.userSelected.username}` : 'No user selected'}
+                  </div>
+                </div>
+                <div className="user-control-row">
+                  <button type="button" className="action-btn" onClick={() => manageStore.openPopup('user-create')} disabled={manageStore.isLoading}>
+                    Create User
+                  </button>
+                  <button type="button" className="action-btn" onClick={() => manageStore.openPopup('permission-edit')} disabled={manageStore.isUserActionDisabled}>
+                    Edit Permissions
+                  </button>
+                  <button type="button" className="action-btn" onClick={() => manageStore.openPopup('service-permission-create')} disabled={manageStore.isLoading}>
+                    Declare Service Permission
+                  </button>
+                  <button type="button" className="action-btn" onClick={() => manageStore.issueToken(manageStore.userSelected.uid)} disabled={manageStore.isUserActionDisabled}>
+                    Issue Token
+                  </button>
+                  <button
+                    type="button"
+                    className="action-btn"
+                    onClick={handleSelectedTokenView}
+                    disabled={manageStore.isUserActionDisabled || !manageStore.userSelected?.jwt_token_ids?.length}
+                  >
+                    View Token
+                  </button>
+                  <button type="button" className="action-btn delete-btn" onClick={() => manageStore.deleteUser(manageStore.userSelected.uid)} disabled={manageStore.isUserActionDisabled}>
+                    Delete User
+                  </button>
+                  <button type="button" className="action-btn" onClick={manageStore.fetchUsers} disabled={manageStore.isLoading}>
+                    {manageStore.isLoading ? 'Loading...' : 'Refresh'}
+                  </button>
+                </div>
+                <FolderView
+                  data={manageStore.userFolderData}
+                  config={manageStore.userFolderConfig}
+                  onEvent={handleUserFolderEvent}
                 />
-                <input
-                  className="text-input"
-                  value={manageStore.userDraft.password}
-                  onChange={(event) => manageStore.setUserDraftField('password', event.target.value)}
-                  placeholder="password"
-                  type="password"
-                />
-                <button onClick={manageStore.createUser} className="create-btn" disabled={manageStore.isLoading}>
-                  Create User
-                </button>
-                <button onClick={manageStore.fetchUsers} className="refresh-btn" disabled={manageStore.isLoading}>
-                  {manageStore.isLoading ? 'Loading...' : 'Refresh'}
-                </button>
               </div>
           </TabsOnTop.Tab>
 
           <TabsOnTop.Tab label="JWT Tokens">
-            <div className="section-header">
-              <div className="section-title">JWT Token Details</div>
+            <div className="user-panel">
+              <div className="user-panel-title-row">
+                <div className="section-title">JWT Tokens</div>
+                <div className="user-selected-text">
+                  {manageStore.tokenSelectedJti ? `Selected: ${manageStore.tokenSelectedJti}` : 'No token selected'}
+                </div>
+              </div>
+              <div className="user-control-row">
+                <button
+                  type="button"
+                  className="action-btn"
+                  onClick={() => manageStore.issueToken(manageStore.uidForTokenIssue)}
+                  disabled={manageStore.isLoading || !manageStore.uidForTokenIssue}
+                >
+                  Add Token
+                </button>
+                <button
+                  type="button"
+                  className="action-btn"
+                  onClick={() => manageStore.viewToken(manageStore.tokenSelectedJti)}
+                  disabled={manageStore.isTokenActionDisabled}
+                >
+                  View Token
+                </button>
+                <button
+                  type="button"
+                  className="action-btn delete-btn"
+                  onClick={() => manageStore.deleteToken(manageStore.tokenSelectedJti)}
+                  disabled={manageStore.isTokenActionDisabled}
+                >
+                  Delete Token
+                </button>
+                <button type="button" className="action-btn" onClick={manageStore.fetchUsers} disabled={manageStore.isLoading}>
+                  {manageStore.isLoading ? 'Loading...' : 'Refresh'}
+                </button>
+              </div>
+              <FolderView
+                data={manageStore.tokenFolderData}
+                config={manageStore.tokenFolderConfig}
+                onEvent={manageStore.handleTokenFolderEvent}
+              />
             </div>
-            {manageStore.selectedToken ? (
-              <div className="token-details">
-                <KeyValues
-                  data={Object.entries(manageStore.selectedToken).map(([key, value]) => ({
-                    key,
-                    value: typeof value === 'object' ? JSON.stringify(value) : String(value)
-                  }))}
-                  isEditable={false}
-                  alignColumn={true}
-                  keyColWidth="min"
-                />
-              </div>
-            ) : (
-              <div className="no-token-selected">
-                Select a token from the Users table to view its details
-              </div>
-            )}
           </TabsOnTop.Tab>
 
         </TabsOnTop>

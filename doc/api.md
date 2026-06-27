@@ -105,15 +105,28 @@ User management:
 ```text
 GET    /manage/api/users
 POST   /manage/api/users
+PUT    /manage/api/users/<uid>/permissions
 DELETE /manage/api/users/<uid>
 ```
+
+User management APIs require built-in auth permissions. For example, listing users requires user read permission, creating users requires user create permission, editing permission assignments requires user edit permission, and deleting users requires user delete permission.
 
 Token management:
 
 ```text
 POST /manage/api/tokens/issue
 GET  /manage/api/tokens/<jti>
+DELETE /manage/api/tokens/<jti>
 ```
+
+Permission metadata:
+
+```text
+GET  /manage/api/permissions
+POST /manage/api/service_permissions
+```
+
+`/manage/api/service_permissions` declares a permission code for an external service. It does not assign that permission to a service account. Permission assignments belong to users.
 
 DB endpoint management:
 
@@ -147,7 +160,8 @@ Request auth:
 1. App backend receives a request with token.
 2. App backend sends token to `/api/verify_jwt_token`, or calls gRPC `ValidateSession`.
 3. If response code is `0`, the request is treated as authenticated.
-4. If response code is negative, the request is rejected.
+4. If the action needs authorization, the app backend checks whether the user has the needed built-in or service-scoped permission.
+5. If response code is negative, the request is rejected.
 
 Token issue from management page:
 
