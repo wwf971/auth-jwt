@@ -28,7 +28,14 @@ function ConfigManagePanel() {
           )}
         </TabsOnTop.Tab>
       </TabsOnTop>
-      {configStore.error && <div className="error-message">{configStore.error}</div>}
+      {configStore.error && (
+        <div className="app-message-bar app-message-bar-error">
+          <div className="app-message-text">{configStore.error}</div>
+          <button type="button" className="app-message-btn" onClick={configStore.dismissError} disabled={configStore.isLoading}>
+            Dismiss
+          </button>
+        </div>
+      )}
     </div>
   )
 }

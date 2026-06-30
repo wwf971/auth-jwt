@@ -4,6 +4,12 @@ import { manageStore } from './store'
 
 function UserPermissionEdit() {
   const user = manageStore.userSelected
+  const handleBackdropMouseDown = (event) => {
+    if (event.target === event.currentTarget) {
+      manageStore.closePermissionEditFromBackdrop()
+    }
+  }
+
   useEffect(() => {
     if (manageStore.popupCurrent === 'permission-edit' && user) {
       manageStore.markPermissionPanelReady()
@@ -13,10 +19,24 @@ function UserPermissionEdit() {
   if (manageStore.popupCurrent !== 'permission-edit' || !user) return null
 
   return (
-    <div className="popup-backdrop">
+    <div className="popup-backdrop" onMouseDown={handleBackdropMouseDown}>
       <div className="popup-panel popup-panel-wide">
         <div className="popup-title">Edit Permissions: {user.username}</div>
         <div className="popup-content">
+          {manageStore.error && (
+            <div className="app-message-bar app-message-bar-popup app-message-bar-error">
+              <div className="app-message-text">{manageStore.error}</div>
+              {manageStore.errorMessageState.isRetryVisible ? (
+                <button type="button" className="app-message-btn" onClick={manageStore.retryError} disabled={manageStore.isLoading}>
+                  Retry
+                </button>
+              ) : (
+                <button type="button" className="app-message-btn" onClick={manageStore.dismissError} disabled={manageStore.isLoading}>
+                  Dismiss
+                </button>
+              )}
+            </div>
+          )}
           <div className="popup-subtitle">Built-in Permissions</div>
           <div className="popup-chip-list">
             {manageStore.permissions.map((permission) => (

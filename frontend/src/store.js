@@ -33,6 +33,7 @@ class ManageStore {
     expiresAt: 170,
   }
   error = ''
+  errorRetryAction = null
   userSelectedUid = null
   popupCurrent = null
   isUserRowDoubleClickPopupSuppressed = false
@@ -240,7 +241,7 @@ class ManageStore {
     this.selectedToken = null
     this.userSelectedUid = null
     this.popupCurrent = null
-    this.error = ''
+    this.clearError()
     this.dbError = ''
     this.dbStatusMessageById = {}
   }
@@ -295,7 +296,7 @@ class ManageStore {
       ],
       statusBar: {
         itemCount: this.users.length,
-        messageState: this.error ? { status: 'error', messageText: this.error } : null,
+        messageState: null,
       },
     }
   }
@@ -365,7 +366,7 @@ class ManageStore {
       ],
       statusBar: {
         itemCount: this.tokenRows.length,
-        messageState: this.error ? { status: 'error', messageText: this.error } : null,
+        messageState: null,
       },
     }
   }
@@ -409,6 +410,46 @@ class ManageStore {
     return this.isLoading || this.isPermissionPanelOpening
   }
 
+  get errorMessageState() {
+    return {
+      messageText: this.error || '',
+      isVisible: Boolean(this.error),
+      isRetryVisible: Boolean(this.error && this.errorRetryAction),
+    }
+  }
+
+  setError(message, retryAction = null) {
+    this.error = message || ''
+    this.errorRetryAction = this.error ? retryAction : null
+  }
+
+  clearError() {
+    this.error = ''
+    this.errorRetryAction = null
+  }
+
+  dismissError() {
+    this.clearError()
+  }
+
+  async retryError() {
+    const retryAction = this.errorRetryAction
+    if (!retryAction || this.isLoading) return
+    this.clearError()
+    await retryAction()
+  }
+
+  isErrorRetryUseful(message) {
+    const messageText = String(message || '').toLowerCase()
+    return (
+      messageText.includes('grpc') ||
+      messageText.includes('not ready') ||
+      messageText.includes('not running') ||
+      messageText.includes('request failed') ||
+      messageText.includes('failed to fetch')
+    )
+  }
+
   isCurrentUser(user) {
     return Boolean(this.currentUsername && user?.username === this.currentUsername)
   }
@@ -426,6 +467,7 @@ class ManageStore {
       this.userDraft = { username: '', password: '', permission_codes: [], service_permissions: [] }
     }
     if (popupCurrent === 'permission-edit') {
+      this.clearError()
       this.isPermissionPanelOpening = true
       this.startPermissionEdit()
       if (!this.userSelected) {
@@ -563,7 +605,7 @@ class ManageStore {
 
   async fetchUsers() {
     this.isLoading = true
-    this.error = ''
+    this.clearError()
     try {
       const response = await fetch('/manage/api/users', {
         headers: this.authHeaders,
@@ -584,7 +626,8 @@ class ManageStore {
             this.tokenSelectedJti = null
           }
         } else {
-          this.error = result.message || 'Failed to fetch users.'
+          const message = result.message || 'Failed to fetch users.'
+          this.setError(message, () => this.fetchUsers())
         }
       })
       if (result.code === 0) {
@@ -592,7 +635,7 @@ class ManageStore {
       }
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error fetching users: ' + error.message
+        this.setError('Error fetching users: ' + error.message, () => this.fetchUsers())
       })
     } finally {
       runInAction(() => {
@@ -709,17 +752,26 @@ class ManageStore {
 
   async savePermissionDraft() {
     if (!this.permissionDraft.uid) {
-      this.error = 'Select a user first.'
+      this.setError('Select a user first.')
       return
     }
-    await this.updateUserPermissions(
+    const result = await this.updateUserPermissions(
       this.permissionDraft.uid,
       this.permissionDraft.permission_codes,
       this.permissionDraft.service_permissions,
     )
-    if (!this.error) {
+    if (result.code === 0) {
       this.closePopup()
+      return
     }
+    this.startPermissionEdit()
+  }
+
+  closePermissionEditFromBackdrop() {
+    if (this.isLoading) {
+      return
+    }
+    this.closePopup()
   }
 
   async fetchPermissions() {
@@ -735,19 +787,20 @@ class ManageStore {
           this.servicePermissions = result.data.service_permissions || []
           this.servicePermissionIncludes = result.data.service_permission_includes || []
         } else {
-          this.error = result.message || 'Failed to fetch permissions.'
+          const message = result.message || 'Failed to fetch permissions.'
+          this.setError(message, () => this.fetchPermissions())
         }
       })
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error fetching permissions: ' + error.message
+        this.setError('Error fetching permissions: ' + error.message, () => this.fetchPermissions())
       })
     }
   }
 
   async updateUserPermissions(uid, permissionCodes, servicePermissions) {
     this.isLoading = true
-    this.error = ''
+    this.clearError()
     try {
       const response = await fetch(`/manage/api/users/${uid}/permissions`, {
         method: 'PUT',
@@ -763,16 +816,20 @@ class ManageStore {
       const result = await response.json()
       runInAction(() => {
         if (result.code !== 0) {
-          this.error = result.message || 'Failed to update permissions.'
+          const message = result.message || 'Failed to update permissions.'
+          const retryAction = this.isErrorRetryUseful(message) ? () => this.updateUserPermissions(uid, permissionCodes, servicePermissions) : null
+          this.setError(message, retryAction)
         }
       })
       if (result.code === 0) {
         await this.fetchUsers()
       }
+      return result.code === 0 ? { code: 0 } : { code: -1, message: result.message }
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error updating permissions: ' + error.message
+        this.setError('Error updating permissions: ' + error.message, () => this.updateUserPermissions(uid, permissionCodes, servicePermissions))
       })
+      return { code: -1, message: error.message }
     } finally {
       runInAction(() => {
         this.isLoading = false
@@ -809,12 +866,12 @@ class ManageStore {
   async createServicePermission() {
     const permissionCode = Number(this.servicePermissionDraft.permission_code)
     if (!this.servicePermissionDraft.service_id || !permissionCode) {
-      this.error = 'Service id and permission code are required.'
+      this.setError('Service id and permission code are required.')
       return
     }
 
     this.isLoading = true
-    this.error = ''
+    this.clearError()
     try {
       const response = await fetch('/manage/api/service_permissions', {
         method: 'POST',
@@ -840,7 +897,9 @@ class ManageStore {
             description: '',
           }
         } else {
-          this.error = result.message || 'Failed to declare service permission.'
+          const message = result.message || 'Failed to declare service permission.'
+          const retryAction = this.isErrorRetryUseful(message) ? () => this.createServicePermission() : null
+          this.setError(message, retryAction)
         }
       })
       if (result.code === 0) {
@@ -849,7 +908,7 @@ class ManageStore {
       }
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error declaring service permission: ' + error.message
+        this.setError('Error declaring service permission: ' + error.message, () => this.createServicePermission())
       })
     } finally {
       runInAction(() => {
@@ -860,11 +919,11 @@ class ManageStore {
 
   async createUser() {
     if (!this.userDraft.username || !this.userDraft.password) {
-      this.error = 'Username and password are required.'
+      this.setError('Username and password are required.')
       return
     }
     this.isLoading = true
-    this.error = ''
+    this.clearError()
     try {
       const response = await fetch('/manage/api/users', {
         method: 'POST',
@@ -876,7 +935,9 @@ class ManageStore {
         if (result.code === 0) {
           this.userDraft = { username: '', password: '', permission_codes: [], service_permissions: [] }
         } else {
-          this.error = result.message || 'Failed to create user.'
+          const message = result.message || 'Failed to create user.'
+          const retryAction = this.isErrorRetryUseful(message) ? () => this.createUser() : null
+          this.setError(message, retryAction)
         }
       })
       if (result.code === 0) {
@@ -885,7 +946,7 @@ class ManageStore {
       }
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error creating user: ' + error.message
+        this.setError('Error creating user: ' + error.message, () => this.createUser())
       })
     } finally {
       runInAction(() => {
@@ -896,7 +957,7 @@ class ManageStore {
 
   async deleteUser(uid) {
     this.isLoading = true
-    this.error = ''
+    this.clearError()
     try {
       const response = await fetch(`/manage/api/users/${uid}`, {
         method: 'DELETE',
@@ -905,7 +966,9 @@ class ManageStore {
       const result = await response.json()
       runInAction(() => {
         if (result.code !== 0) {
-          this.error = result.message || 'Failed to delete user.'
+          const message = result.message || 'Failed to delete user.'
+          const retryAction = this.isErrorRetryUseful(message) ? () => this.deleteUser(uid) : null
+          this.setError(message, retryAction)
         }
       })
       if (result.code === 0) {
@@ -913,7 +976,7 @@ class ManageStore {
       }
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error deleting user: ' + error.message
+        this.setError('Error deleting user: ' + error.message, () => this.deleteUser(uid))
       })
     } finally {
       runInAction(() => {
@@ -924,7 +987,7 @@ class ManageStore {
 
   async issueToken(uid) {
     this.isLoading = true
-    this.error = ''
+    this.clearError()
     try {
       const response = await fetch('/manage/api/tokens/issue', {
         method: 'POST',
@@ -934,7 +997,9 @@ class ManageStore {
       const result = await response.json()
       runInAction(() => {
         if (result.code !== 0) {
-          this.error = result.message || 'Failed to issue token.'
+          const message = result.message || 'Failed to issue token.'
+          const retryAction = this.isErrorRetryUseful(message) ? () => this.issueToken(uid) : null
+          this.setError(message, retryAction)
         }
       })
       if (result.code === 0) {
@@ -946,7 +1011,7 @@ class ManageStore {
       }
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error issuing token: ' + error.message
+        this.setError('Error issuing token: ' + error.message, () => this.issueToken(uid))
       })
     } finally {
       runInAction(() => {
@@ -957,7 +1022,7 @@ class ManageStore {
 
   async viewToken(jti) {
     this.isLoading = true
-    this.error = ''
+    this.clearError()
     try {
       const response = await fetch(`/manage/api/tokens/${jti}`, {
         headers: this.authHeaders,
@@ -969,12 +1034,14 @@ class ManageStore {
           this.tokenSelectedJti = jti
           this.tokenInfoByJti[jti] = result.data
         } else {
-          this.error = result.message || 'Failed to fetch token.'
+          const message = result.message || 'Failed to fetch token.'
+          const retryAction = this.isErrorRetryUseful(message) ? () => this.viewToken(jti) : null
+          this.setError(message, retryAction)
         }
       })
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error fetching token: ' + error.message
+        this.setError('Error fetching token: ' + error.message, () => this.viewToken(jti))
       })
     } finally {
       runInAction(() => {
@@ -1006,7 +1073,7 @@ class ManageStore {
   async deleteToken(jti) {
     if (!jti) return
     this.isLoading = true
-    this.error = ''
+    this.clearError()
     try {
       const response = await fetch(`/manage/api/tokens/${jti}`, {
         method: 'DELETE',
@@ -1019,7 +1086,9 @@ class ManageStore {
           if (this.tokenSelectedJti === jti) this.tokenSelectedJti = null
           if (this.selectedToken?.jti === jti) this.selectedToken = null
         } else {
-          this.error = result.message || 'Failed to delete token.'
+          const message = result.message || 'Failed to delete token.'
+          const retryAction = this.isErrorRetryUseful(message) ? () => this.deleteToken(jti) : null
+          this.setError(message, retryAction)
         }
       })
       if (result.code === 0) {
@@ -1027,7 +1096,7 @@ class ManageStore {
       }
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error deleting token: ' + error.message
+        this.setError('Error deleting token: ' + error.message, () => this.deleteToken(jti))
       })
     } finally {
       runInAction(() => {
@@ -1039,7 +1108,7 @@ class ManageStore {
   async revokeToken(jti) {
     if (!jti) return
     this.isLoading = true
-    this.error = ''
+    this.clearError()
     try {
       const response = await fetch(`/manage/api/tokens/${jti}/revoke`, {
         method: 'POST',
@@ -1048,7 +1117,9 @@ class ManageStore {
       const result = await response.json()
       runInAction(() => {
         if (result.code !== 0) {
-          this.error = result.message || 'Failed to revoke token.'
+          const message = result.message || 'Failed to revoke token.'
+          const retryAction = this.isErrorRetryUseful(message) ? () => this.revokeToken(jti) : null
+          this.setError(message, retryAction)
         }
       })
       if (result.code === 0) {
@@ -1058,7 +1129,7 @@ class ManageStore {
       }
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error revoking token: ' + error.message
+        this.setError('Error revoking token: ' + error.message, () => this.revokeToken(jti))
       })
     } finally {
       runInAction(() => {
@@ -1069,7 +1140,7 @@ class ManageStore {
 
   async checkExpiredTokens() {
     this.isLoading = true
-    this.error = ''
+    this.clearError()
     try {
       const response = await fetch('/manage/api/tokens/expired/check', {
         method: 'POST',
@@ -1078,10 +1149,12 @@ class ManageStore {
       const result = await response.json()
       runInAction(() => {
         if (result.code !== 0) {
-          this.error = result.message || 'Failed to check expired tokens.'
+          const message = result.message || 'Failed to check expired tokens.'
+          const retryAction = this.isErrorRetryUseful(message) ? () => this.checkExpiredTokens() : null
+          this.setError(message, retryAction)
         } else {
           const count = Number(result.data?.expired_count || 0)
-          this.error = count > 0 ? `Expired tokens found: ${count}` : 'No valid tokens are expired.'
+          this.setError(count > 0 ? `Expired tokens found: ${count}` : 'No valid tokens are expired.')
         }
       })
       if (result.code === 0) {
@@ -1089,7 +1162,7 @@ class ManageStore {
       }
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error checking expired tokens: ' + error.message
+        this.setError('Error checking expired tokens: ' + error.message, () => this.checkExpiredTokens())
       })
     } finally {
       runInAction(() => {
@@ -1100,7 +1173,7 @@ class ManageStore {
 
   async removeTokensByStatus(statusMode) {
     this.isLoading = true
-    this.error = ''
+    this.clearError()
     try {
       const response = await fetch('/manage/api/tokens/remove', {
         method: 'POST',
@@ -1110,9 +1183,11 @@ class ManageStore {
       const result = await response.json()
       runInAction(() => {
         if (result.code !== 0) {
-          this.error = result.message || 'Failed to remove tokens.'
+          const message = result.message || 'Failed to remove tokens.'
+          const retryAction = this.isErrorRetryUseful(message) ? () => this.removeTokensByStatus(statusMode) : null
+          this.setError(message, retryAction)
         } else {
-          this.error = `Removed tokens: ${Number(result.data?.deleted_count || 0)}`
+          this.setError(`Removed tokens: ${Number(result.data?.deleted_count || 0)}`)
         }
       })
       if (result.code === 0) {
@@ -1120,7 +1195,7 @@ class ManageStore {
       }
     } catch (error) {
       runInAction(() => {
-        this.error = 'Error removing tokens: ' + error.message
+        this.setError('Error removing tokens: ' + error.message, () => this.removeTokensByStatus(statusMode))
       })
     } finally {
       runInAction(() => {

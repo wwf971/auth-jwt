@@ -35,7 +35,7 @@ else:
   import service_pb2_grpc
 
 # Import our service implementation
-from api.api_grpc import AuthServiceImplementation
+from api.server_grpc import AuthServiceImplementation
 from utils import setup_logging
 
 # Setup logging

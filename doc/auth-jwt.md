@@ -188,4 +188,6 @@ The management console is for operating the auth service itself:
 
 The console uses DB users and JWT login too. Management operations then check built-in auth permissions, such as user create or user delete.
 
+Users declared in config with role `manage` are protected bootstrap users. Their permission assignments and user records are controlled by config, not by the management console.
+
 See `deploy.md` for local launch and endpoint information.

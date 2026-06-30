@@ -180,6 +180,10 @@ class ConfigStore {
     this.config = null
     this.error = ''
   }
+
+  dismissError() {
+    this.error = ''
+  }
 }
 
 export const configStore = new ConfigStore()

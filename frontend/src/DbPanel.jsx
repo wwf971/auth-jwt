@@ -33,7 +33,14 @@ function DbPanel() {
         </div>
       </div>
 
-      {manageStore.dbError && <div className="error-message">{manageStore.dbError}</div>}
+      {manageStore.dbError && (
+        <div className="app-message-bar app-message-bar-error">
+          <div className="app-message-text">{manageStore.dbError}</div>
+          <button type="button" className="app-message-btn" onClick={manageStore.fetchDbs} disabled={manageStore.isLoading}>
+            Retry
+          </button>
+        </div>
+      )}
 
       <div className="db-card-list">
         {manageStore.dbs.map((db) => (

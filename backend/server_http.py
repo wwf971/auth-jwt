@@ -23,7 +23,7 @@ sys.path.insert(0, dir_path_current)
 sys.path.insert(0, dir_path_third_party_global)
 
 from utils import setup_logging
-from api.api_http import register_auth_routes
+from api.server_http import register_auth_routes
 
 # Setup logging
 setup_logging()

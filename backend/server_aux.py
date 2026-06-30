@@ -40,7 +40,7 @@ else:
 from third_party.utils_python_global import _utils_file
 from config import compose_config
 from utils import setup_logging
-from api.api import init_database, get_token_user, check_user_permission
+from api.api import init_database, get_token_user, check_user_permission, authorize_user_permission_update
 from api.api_db import (
 	JWTToken,
 	PERMISSION_CODE_USER_READ,
@@ -48,7 +48,6 @@ from api.api_db import (
 	PERMISSION_CODE_USER_EDIT,
 	PERMISSION_CODE_USER_DELETE,
 	PERMISSION_CODE_TOKEN_READ,
-	PERMISSION_CODE_TOKEN_ISSUE,
 	PERMISSION_CODE_TOKEN_REVOKE,
 	PERMISSION_CODE_TOKEN_DELETE,
 	TOKEN_STATUS_EXPIRED,
@@ -480,13 +479,35 @@ def delete_user_endpoint(uid):
 def update_user_permissions_endpoint(uid):
 	"""Update user permission assignments by calling gRPC service"""
 	try:
-		_user_manage, auth_error = get_manage_user_with_permission(PERMISSION_CODE_TOKEN_ISSUE)
+		user_manage, auth_error = get_manage_user_with_permission(PERMISSION_CODE_USER_EDIT)
 		if auth_error:
 			return auth_error
 
 		data = request.json or {}
 		permission_codes = data.get('permission_codes') or []
 		service_permissions = data.get('service_permissions') or []
+
+		_engine, SessionLocal = init_database(config_current)
+		session = SessionLocal()
+		try:
+			result_auth = authorize_user_permission_update(
+				config_current,
+				session,
+				user_manage["uid"],
+				uid,
+				[int(code) for code in permission_codes],
+				[
+					{
+						"service_id": item.get('service_id', ''),
+						"permission_code": int(item.get('permission_code', 0)),
+					}
+					for item in service_permissions
+				],
+			)
+		finally:
+			session.close()
+		if not result_auth["success"]:
+			return jsonify({"code": -1, "message": result_auth["message"], "data": None}), 403
 
 		grpc_port = config_current.get('PORT_SERVICE_GRPC', 9532)
 		channel = grpc_lib.insecure_channel(f'localhost:{grpc_port}')

@@ -196,6 +196,59 @@ body {
   white-space: normal;
 }
 
+.app-message-bar {
+  min-height: 24px;
+  border-top: 1px solid #d0d0d0;
+  border-bottom: 1px solid #d0d0d0;
+  background: #f8f8f8;
+  color: #666;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  padding: 0 8px;
+  font-size: 12px;
+  margin-bottom: var(--spacing-md);
+}
+
+.app-message-bar-error {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.app-message-bar-empty {
+  color: transparent;
+}
+
+.app-message-bar-popup {
+  margin-bottom: 0;
+}
+
+.app-message-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+  font-weight: 500;
+}
+
+.app-message-btn {
+  border: 1px solid #d0d0d0;
+  border-radius: 2px;
+  background: #ffffff;
+  color: #333333;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.app-message-btn:disabled {
+  color: #999999;
+  cursor: not-allowed;
+}
+
 .table-container {
   background: var(--color-bg);
   border: 1px solid var(--color-border);

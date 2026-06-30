@@ -62,6 +62,28 @@ function TokenUsernameCell({ data, rowId, onEvent }) {
   )
 }
 
+function ManageMessageBar() {
+  const messageState = manageStore.errorMessageState
+  const className = messageState.isVisible ? 'app-message-bar app-message-bar-error' : 'app-message-bar app-message-bar-empty'
+
+  return (
+    <div className={className}>
+      <div className="app-message-text">{messageState.messageText}</div>
+      {messageState.isVisible && (
+        messageState.isRetryVisible ? (
+          <button type="button" className="app-message-btn" onClick={manageStore.retryError} disabled={manageStore.isLoading}>
+            Retry
+          </button>
+        ) : (
+          <button type="button" className="app-message-btn" onClick={manageStore.dismissError} disabled={manageStore.isLoading}>
+            Dismiss
+          </button>
+        )
+      )}
+    </div>
+  )
+}
+
 function App() {
   const tabsOnTopRef = useRef(null)
 
@@ -158,7 +180,7 @@ function App() {
         <div className="tabs-wrapper">
           <TabsOnTop ref={tabsOnTopRef} defaultTab="users" autoSwitchToNewTab={false}>
             <TabsOnTop.Tab label="Users">
-              {manageStore.error && <div className="error-message">{manageStore.error}</div>}
+              <ManageMessageBar />
               <div className="user-panel">
                 <div className="user-panel-title-row">
                   <div className="section-title">Users</div>
@@ -210,6 +232,7 @@ function App() {
           </TabsOnTop.Tab>
 
           <TabsOnTop.Tab label="JWT Tokens">
+            <ManageMessageBar />
             <div className="user-panel">
               <div className="user-panel-title-row">
                 <div className="section-title">JWT Tokens</div>
